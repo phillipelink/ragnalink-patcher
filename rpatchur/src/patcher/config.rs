@@ -22,6 +22,14 @@ pub struct WindowConfiguration {
     pub width: i32,
     pub height: i32,
     pub resizable: bool,
+    /// Remove a barra de titulo do Windows. `Option` de proposito: configuracoes
+    /// antigas, sem este campo, continuam validas e caem no `false`.
+    ///
+    /// ATENCAO: sem a barra somem tambem o fechar, o minimizar e o ARRASTAR. A
+    /// interface precisa oferecer os tres - ver os comandos "exit", "minimize" e
+    /// "drag" em ui.rs. Ligar isto com uma pagina que nao os implemente deixa a
+    /// janela presa na tela, sem como mover nem fechar.
+    pub frameless: Option<bool>,
 }
 
 #[derive(Deserialize, Clone)]

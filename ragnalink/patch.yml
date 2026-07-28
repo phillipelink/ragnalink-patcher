@@ -1,0 +1,30 @@
+# ============================================================================
+#  Modelo de patch pro mkpatch.
+#  Uso:  mkpatch patch.yml saida.thor
+#
+#  A ideia combinada: manter uma PASTA-FONTE versionavel com o conteudo nosso
+#  (sprites, texturas, lua) e gerar o .thor a partir dela. Assim o patch
+#  incremental sai de graca e da pra revisar no git o que mudou.
+# ============================================================================
+
+# true  = aplica dentro da GRF (o normal pra conteudo do jogo)
+# false = escreve solto na pasta do jogo (use pra System\, que fica fora da GRF)
+use_grf_merging: true
+
+target_grf_name: ragnalink.grf
+include_checksums: true
+
+entries:
+  # Pasta inteira: tudo que estiver dentro entra no patch
+  # - relative_path: data\sprite
+
+  # Arquivo unico
+  # - relative_path: data\texture\interface\infobox_bg.bmp
+
+  # Remover algo que ja foi distribuido
+  # - relative_path: data\texture\algo_errado.bmp
+  #   is_removed: true
+
+  # Colocar num caminho diferente dentro da GRF
+  # - relative_path: fonte\clientinfo.xml
+  #   in_grf_path: data\clientinfo.xml

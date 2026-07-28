@@ -1,0 +1,77 @@
+# ATENCAO AO RENOMEAR
+# O patcher monta o nome deste arquivo A PARTIR DO NOME DO EXECUTAVEL
+# (config.rs: PathBuf::from(patcher_name).with_extension("yml")), e o cache
+# segue a mesma regra, virando <nome>.dat. Ou seja: o exe se chama
+# RagnaLinK.exe, entao este arquivo TEM que se chamar RagnaLinK.yml.
+# Renomeou um, renomeia o outro - senao ele abre dizendo que nao achou config.
+
+# ============================================================================
+#  Patcher do RagnaLinK
+#  Este arquivo fica ao lado do executavel do patcher, na RAIZ da pasta do jogo.
+# ============================================================================
+
+window:
+  title: RagnaLinK - Atualizador
+  width: 800
+  height: 600
+  resizable: false
+  # Sem a barra de titulo do Windows. EXIGE que a pagina ofereca fechar,
+  # minimizar e arrastar - sem isso a janela fica presa na tela sem como
+  # mover nem fechar. A index.html deste diretorio ja implementa os tres.
+  # Se algo der errado, trocar para false devolve a barra na hora, sem
+  # recompilar nada.
+  frameless: true
+
+# Botao Jogar
+play:
+  path: RagnaLinK_ptBR5.exe
+  # "1sak1" e a chave que o cliente hexed espera pra nao abrir o launcher oficial.
+  # Se um dia trocar o exe, conferir se a chave continua a mesma.
+  arguments: ["1sak1"]
+  exit_on_success: true
+
+# Botao Configurar (resolucao, som, modo janela)
+setup:
+  path: opensetup.exe
+  arguments: []
+  exit_on_success: false
+
+web:
+  # A interface e uma PAGINA WEB. Duas formas de apontar:
+  #
+  #   1) Local (recomendado pra comecar):  file:///.../ragnalink/index.html
+  #      Abre mesmo sem internet e nao depende do site estar no ar.
+  #   2) Hospedada:  https://ragnalink.com.br/patcher/
+  #      Permite mudar a cara e as noticias SEM redistribuir o patcher -
+  #      mas se o site cair, o jogador ve uma janela em branco.
+  #
+  # A pagina busca as partes dinamicas do site (raca da vez, status) por HTTP e
+  # continua funcionando se elas nao responderem - so esconde as faixas.
+  # PORAM: esse conteudo ao vivo SO aparece na opcao 2. Por file:// a pagina fica
+  # numa origem diferente do site e o webview (MSHTML/IE) bloqueia XHR entre
+  # origens - as faixas ficam vazias por politica do IE, nao por falha do site.
+  # ATENCAO ao "/index.html" no fim: o site NAO tem UseDefaultFiles ligado,
+  # entao terminar em "/patcher/" NAO resolve sozinho pro index.html - cai no
+  # 404, que vira redirect pra pagina de erro, e a janela abre em branco.
+  # Sempre apontar pro arquivo, explicito.
+  index_url: https://ragnalink.com.br/patcher/index.html
+
+  # Espelhos. O patcher tenta o preferido primeiro e cai pros outros se falhar.
+  preferred_patch_server: Principal
+  patch_servers:
+    - name: Principal
+      plist_url: https://ragnalink.com.br/patch/plist.txt
+      patch_url: https://ragnalink.com.br/patch/data/
+
+client:
+  # GRF que recebe os patches. Ainda NAO existe - o `create_grf` abaixo faz o
+  # patcher criar na primeira execucao.
+  # ATENCAO: depois de criada, ela precisa entrar no DATA.INI como PRIORIDADE 0
+  # (numero menor = lida primeiro), empurrando as outras pra baixo. Senao o
+  # conteudo antigo continua ganhando do que a gente acabou de corrigir.
+  default_grf_name: ragnalink.grf
+
+patching:
+  in_place: true         # aplica direto na GRF, sem copia temporaria do tamanho todo
+  check_integrity: true  # confere o checksum do que baixou antes de aplicar
+  create_grf: true       # cria a GRF se ela nao existir (primeira instalacao)

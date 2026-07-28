@@ -1,0 +1,58 @@
+# ============================================================================
+#  Patcher do RagnaLinK
+#  Este arquivo fica ao lado do executavel do patcher, na RAIZ da pasta do jogo.
+# ============================================================================
+
+window:
+  title: RagnaLinK - Atualizador
+  width: 800
+  height: 600
+  resizable: false
+
+# Botao Jogar
+play:
+  path: RagnaLinK_ptBR5.exe
+  # "1sak1" e a chave que o cliente hexed espera pra nao abrir o launcher oficial.
+  # Se um dia trocar o exe, conferir se a chave continua a mesma.
+  arguments: ["1sak1"]
+  exit_on_success: true
+
+# Botao Configurar (resolucao, som, modo janela)
+setup:
+  path: opensetup.exe
+  arguments: []
+  exit_on_success: false
+
+web:
+  # A interface e uma PAGINA WEB. Duas formas de apontar:
+  #
+  #   1) Local (recomendado pra comecar):  file:///.../ragnalink/index.html
+  #      Abre mesmo sem internet e nao depende do site estar no ar.
+  #   2) Hospedada:  https://ragnalink.com.br/patcher/
+  #      Permite mudar a cara e as noticias SEM redistribuir o patcher -
+  #      mas se o site cair, o jogador ve uma janela em branco.
+  #
+  # A pagina que esta neste diretorio ja busca as partes dinamicas do site por
+  # HTTP e continua funcionando se elas nao responderem. Entao dá pra ficar na
+  # opcao local e ainda assim ter conteudo ao vivo. Melhor dos dois.
+  index_url: https://ragnalink.com.br/patcher/
+
+  # Espelhos. O patcher tenta o preferido primeiro e cai pros outros se falhar.
+  preferred_patch_server: Principal
+  patch_servers:
+    - name: Principal
+      plist_url: https://ragnalink.com.br/patch/plist.txt
+      patch_url: https://ragnalink.com.br/patch/data/
+
+client:
+  # GRF que recebe os patches. Ainda NAO existe - o `create_grf` abaixo faz o
+  # patcher criar na primeira execucao.
+  # ATENCAO: depois de criada, ela precisa entrar no DATA.INI como PRIORIDADE 0
+  # (numero menor = lida primeiro), empurrando as outras pra baixo. Senao o
+  # conteudo antigo continua ganhando do que a gente acabou de corrigir.
+  default_grf_name: ragnalink.grf
+
+patching:
+  in_place: true         # aplica direto na GRF, sem copia temporaria do tamanho todo
+  check_integrity: true  # confere o checksum do que baixou antes de aplicar
+  create_grf: true       # cria a GRF se ela nao existir (primeira instalacao)

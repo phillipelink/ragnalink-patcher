@@ -1,0 +1,28 @@
+# Versao do Rust FIXADA de proposito.
+#
+# Este projeto e de 2021. Uma dependencia transitiva (`ntapi`, puxada pelo
+# `mio 0.7`, puxado pelo `tokio`) faz um acesso a campo de struct "packed" que o
+# Rust tratava como AVISO na epoca e passou a tratar como ERRO a partir da 1.73
+# (lint `unaligned_references`, erro E0793). A virada foi na 1.69, de abril de
+# 2023 - por isso a escolha da 1.68.2, a ultima antes dela.
+#
+# Nao da pra consertar atualizando: a correcao do ntapi so veio na linha 0.4, e o
+# `mio 0.7` exige 0.3. Sair dessa exigiria subir o tokio ate uma versao que use
+# `mio 0.8+`, o que arrasta boa parte da arvore de dependencias de um projeto que
+# ja esta parado ha anos.
+#
+# Fixando aqui, o rustup baixa esta versao sozinho na primeira compilacao e o
+# projeto compila exatamente como compilava quando foi escrito. O patcher e um
+# executavel que a gente compila de vez em quando e distribui - nao e um servico
+# exposto na internet -, entao compilador mais antigo aqui nao cria risco real.
+#
+# Para modernizar de verdade um dia: subir o tokio para 1.38 ou mais (ja sem
+# ntapi), conferir o resto da arvore, e so entao apagar este arquivo.
+[toolchain]
+channel = "1.68.2"
+
+# `minimal` = so rustc, cargo e a biblioteca padrao, que e tudo que precisamos.
+# Sem isto o rustup usa o perfil configurado na maquina; se for o "complete",
+# ele tenta baixar ferramentas extras (miri, rust-analyzer) que NAO existem
+# para esta versao neste alvo, e a instalacao morre antes de compilar nada.
+profile = "minimal"

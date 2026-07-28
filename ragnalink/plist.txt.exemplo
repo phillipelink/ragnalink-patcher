@@ -1,0 +1,14 @@
+# Lista de patches do RagnaLinK.
+# Formato: <indice> <arquivo.thor>   (separados por espaco)
+#
+# O patcher ordena pelo INDICE, nao pela ordem das linhas, e guarda no cache
+# o ultimo indice aplicado - por isso os numeros NUNCA podem ser reaproveitados
+# nem reordenados depois de publicados. Patch novo = numero novo, sempre maior.
+#
+# Linha que nao comeca com numero e ignorada, entao estes comentarios sao seguros.
+#
+# Este arquivo vai em:  https://ragnalink.com.br/patch/plist.txt
+# e os .thor em:        https://ragnalink.com.br/patch/data/
+
+1 2026-08-01_base.thor
+2 2026-08-03_correcao-sprites.thor

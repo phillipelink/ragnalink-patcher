@@ -6,11 +6,19 @@ edition = "2018"
 build = "build.rs"
 description = "A customizable patcher for Ragnarok Online"
 
+# Estes textos aparecem nas PROPRIEDADES do arquivo no Windows, no Gerenciador de
+# Tarefas e em avisos de antivirus e do SmartScreen. Como este executavel vai ser
+# distribuido pra centenas de jogadores, ele se apresenta como RagnaLinK - e nao
+# como um projeto de terceiros que a pessoa nunca ouviu falar.
+# Credito ao projeto de origem fica no README e nos arquivos de licenca, que
+# continuam no repositorio.
 [package.metadata.winres]
-FileDescription = "A customizable patcher for Ragnarok Online"
-ProductName = "RPatchur"
+FileDescription = "Atualizador do RagnaLinK"
+ProductName = "RagnaLinK"
 ProductVersion = "0.3.0"
-LegalCopyright = "Copyright © 2020-2021 rpatchur developers"
+OriginalFilename = "RagnaLinK.exe"
+CompanyName = "RagnaLinK"
+LegalCopyright = "Copyright © 2026 RagnaLinK"
 
 [target.'cfg(windows)'.build-dependencies]
 winres = "0.1"
@@ -38,7 +46,10 @@ scopeguard = "1.1"
 advisory-lock = "0.3"
 
 [target.'cfg(windows)'.dependencies]
-winapi = { version = "0.3.6", features = ["shellapi"] }
+# winuser/windef/minwindef/processthreadsapi entraram para os comandos de janela
+# (minimizar e arrastar) que a interface chama quando o patcher roda sem a barra
+# de titulo do Windows. Ver `janela_principal` em src/ui.rs.
+winapi = { version = "0.3.6", features = ["shellapi", "winuser", "windef", "minwindef", "processthreadsapi"] }
 
 [dev-dependencies]
 twox-hash = "1.5"

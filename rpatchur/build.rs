@@ -1,7 +1,9 @@
 #[cfg(windows)]
 fn main() {
     let mut res = winres::WindowsResource::new();
-    res.set_icon("resources/rpatchur.ico");
+    // Icone do RagnaLinK. O rpatchur.ico original continua na pasta, como
+    // referencia - basta trocar o nome aqui pra voltar atras.
+    res.set_icon("resources/ragnalink.ico");
     res.compile().unwrap();
 }
 
