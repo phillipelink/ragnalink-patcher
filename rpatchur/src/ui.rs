@@ -119,6 +119,7 @@ pub fn build_webview<'a>(
                 "reset_cache" => handle_reset_cache(webview),
                 "manual_patch" => handle_manual_patch(webview),
                 "ajustar_janela" => handle_ajustar_janela(webview),
+                "moldar_janela" => handle_moldar_janela(),
                 "minimize" => handle_minimize(),
                 "drag" => handle_drag(),
                 request => handle_json_request(webview, request),
@@ -332,6 +333,96 @@ fn handle_ajustar_janela(webview: &mut WebView<WebViewUserData>) {
     }
 }
 
+/// Forma da janela, em retangulos. Gerado junto com o `fundo.png` pelo script
+/// `fundo_limpo.py`, a partir do canal alfa da propria arte - por isso arte e recorte
+/// nunca saem de sincronia.
+///
+/// Vai embutido no executavel com `include_str!`, e nao lido do disco, de proposito:
+/// arquivo solto poderia sumir, ser editado ou vir truncado na maquina do jogador, e
+/// o sintoma seria uma janela cortada errado, sem nenhuma mensagem de erro.
+#[cfg(windows)]
+const FORMA: &str = include_str!("../resources/forma.txt");
+
+/// Recorta a janela no formato da arte.
+///
+/// POR QUE REGIAO E NAO TRANSPARENCIA POR PIXEL: a borda macia com brilho e sombra
+/// exigiria `UpdateLayeredWindow`, que pinta a janela a partir de um bitmap fornecido
+/// por nos. So que quem desenha aqui e o MSHTML, num controle FILHO - e controle filho
+/// nao entra na superficie alfa da janela pai. Nao e questao de esforco: com este
+/// motor de renderizacao nao da. Regiao e o caminho que sobra, e ela recorta com borda
+/// dura. E por isso que a arte tem um contorno escuro desenhado exatamente em cima da
+/// silhueta: e ele que faz o serrilhado ler como acabamento.
+///
+/// A regiao e montada em pixels de JANELA. Como o modo sem moldura nao tem area
+/// nao-cliente, janela e area de conteudo coincidem, e as coordenadas daqui sao as
+/// mesmas do CSS da pagina.
+///
+/// 🚨 CHAMAR SEMPRE DEPOIS DO `ajustar_janela`. Aquele redimensiona a janela; esta
+/// aqui recorta o resultado. Na ordem trocada o recorte ficaria certo do mesmo jeito
+/// (a regiao nao depende do tamanho), mas existiria um instante com a janela grande e
+/// ja recortada, que pisca feio na abertura.
+#[cfg(windows)]
+fn handle_moldar_janela() {
+    use winapi::shared::minwindef::TRUE;
+    use winapi::um::wingdi::{CombineRgn, CreateRectRgn, DeleteObject, SetRectRgn, RGN_OR};
+    use winapi::um::winuser::SetWindowRgn;
+
+    let hwnd = match janela_principal() {
+        Some(h) => h,
+        None => return,
+    };
+
+    unsafe {
+        let regiao = CreateRectRgn(0, 0, 0, 0); // comeca vazia e vai crescendo
+        let peca = CreateRectRgn(0, 0, 0, 0); // reaproveitada a cada retangulo
+        if regiao.is_null() || peca.is_null() {
+            log::error!("Could not create the window region");
+            if !regiao.is_null() {
+                DeleteObject(regiao as _);
+            }
+            if !peca.is_null() {
+                DeleteObject(peca as _);
+            }
+            return;
+        }
+
+        let mut total = 0usize;
+        for (numero, linha) in FORMA.lines().enumerate() {
+            let linha = linha.trim();
+            if linha.is_empty() || linha.starts_with('#') {
+                continue;
+            }
+            let mut campos = linha.split_whitespace().map(str::parse::<i32>);
+            match (campos.next(), campos.next(), campos.next(), campos.next()) {
+                (Some(Ok(esq)), Some(Ok(topo)), Some(Ok(dir)), Some(Ok(baixo))) => {
+                    // Reusar uma unica peca evita criar e destruir um objeto GDI por
+                    // retangulo. Sao poucas centenas, mas objeto GDI e recurso escasso
+                    // e vazar um por engano custa caro num programa que fica aberto.
+                    SetRectRgn(peca, esq, topo, dir, baixo);
+                    CombineRgn(regiao, regiao, peca, RGN_OR);
+                    total += 1;
+                }
+                _ => log::warn!("Malformed rectangle on line {} of forma.txt", numero + 1),
+            }
+        }
+        DeleteObject(peca as _);
+
+        if total == 0 {
+            // Regiao vazia faz a janela DESAPARECER da tela, e sem barra de titulo o
+            // jogador nao teria como fechar nem mover. Diante de um arquivo quebrado,
+            // janela retangular e um defeito visual; janela invisivel e um travamento.
+            log::error!("forma.txt has no usable rectangles; leaving the window unshaped");
+            DeleteObject(regiao as _);
+            return;
+        }
+
+        // A partir daqui a regiao pertence ao sistema. Liberar seria uso depois de
+        // liberado - o Windows a destroi junto com a janela.
+        SetWindowRgn(hwnd, regiao, TRUE);
+        log::info!("Window shaped with {} rectangles", total);
+    }
+}
+
 /// Minimiza a janela. Importa mais do que parece: na primeira instalacao o jogador
 /// baixa varios GB e vai querer fazer outra coisa enquanto espera.
 #[cfg(windows)]
@@ -368,6 +459,8 @@ fn handle_drag() {
 // barra de titulo e responsabilidade do gerenciador de janelas.
 #[cfg(not(windows))]
 fn handle_ajustar_janela(_webview: &mut WebView<WebViewUserData>) {}
+#[cfg(not(windows))]
+fn handle_moldar_janela() {}
 #[cfg(not(windows))]
 fn handle_minimize() {}
 #[cfg(not(windows))]

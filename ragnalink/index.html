@@ -7,208 +7,231 @@
 <!--
   ============================================================================
    ATENCAO ANTES DE EDITAR ESTE ARQUIVO
-   O rpatchur usa a crate web-view 0.7, que no Windows renderiza com MSHTML -
-   o motor do Internet Explorer. NAO e Chromium.
 
-   Ou seja, aqui NAO funcionam:
-     JS  - fetch, let, const, arrow function, template string, Promise
-     CSS - var(--x), grid, clamp(), gap em flexbox
-   Use var, XMLHttpRequest e posicionamento absoluto. A janela e de tamanho
-   fixo (800x600, resizable: false), entao absoluto e ate mais simples que
-   flexbox e nao tem surpresa de renderizacao.
+   1) O MOTOR NAO E O CHROME. O rpatchur usa a crate web-view 0.7, que no
+      Windows renderiza com MSHTML - o motor do Internet Explorer.
+      NAO funcionam aqui:
+        JS  - fetch, let, const, arrow function, template string, Promise,
+              classList, addEventListener com opcoes
+        CSS - var(--x), grid, flexbox com gap, clamp(), filter, transform 3D
+      Use var, XMLHttpRequest, posicionamento absoluto e className.
 
-   As cinco funcoes patchingStatus* la embaixo sao chamadas PELO PATCHER.
-   Se elas sumirem, a atualizacao roda em silencio e o jogador acha que travou.
+   2) TAMANHO: 1200x800. A proporcao TEM que ser 3:2, igual a da arte original
+      (1536x1024). Todas as medidas deste arquivo foram tiradas a mao sobre a
+      arte reduzida a 900x600 e depois multiplicadas por 4/3 - se um dia o
+      tamanho mudar de novo, o caminho e o mesmo: mexer no W,H do fundo2.py e
+      reescalar tudo aqui pelo novo fator. Bordas de 1px NAO escalam.
+
+   3) A TELA E UMA IMAGEM. Moldura, ilustracao, logo, nome do episodio, Poring,
+      caixas, botoes e barra de baixo estao PINTADOS no fundo.png. Este arquivo
+      desenha so o que MUDA. Por isso quase tudo tem posicao absoluta em pixel:
+      precisa cair exatamente onde a arte reservou.
+      Mexeu na arte? Regere o fundo com o fundo2.py, que tambem regera o
+      resources/forma.txt do recorte da janela - e ai PRECISA recompilar, porque
+      o forma.txt vai embutido no executavel.
+
+   4) NADA AQUI EXISTE PRA TAPAR PINTURA. Na arte anterior havia um painel de
+      600x132 no topo, cuja unica funcao era esconder um cartao e uma fileira de
+      pilulas que vinham desenhados. A arte nova veio com o topo limpo, entao a
+      faixa de status pode ser fina e semitransparente. Se um dia a arte voltar
+      a trazer esses elementos, isto aqui volta a ser um tapume.
+
+   5) A JANELA E RECORTADA. A silhueta (cantos chanfrados e a crista do topo)
+      vem do SetWindowRgn, no lado Rust, a partir do resources/forma.txt. O que
+      cair fora dela simplesmente NAO APARECE, sem aviso nenhum.
+
+   6) AS SEIS FUNCOES patchingStatus*/notification* SAO CHAMADAS PELO PATCHER.
+      Se sumirem, a atualizacao roda em silencio e o jogador acha que travou.
   ============================================================================
 -->
 <style>
-  /* 🚨 NADA de largura/altura FIXA aqui. Sem a barra de titulo, o Windows entrega
-     como area de conteudo tambem o espaco que a moldura ocupava - cerca de 22px a
-     mais na largura e 29 na altura. Com medida fixa em 800x600 sobrava uma faixa
-     branca embaixo e a direita. Tudo abaixo se ancora nas BORDAS, nao em pixels
-     de largura, entao a tela se ajusta a qualquer sobra. */
+  /* 🚨 NADA de largura/altura fixa no html/body. Sem a barra de titulo, o
+     Windows entrega como area de conteudo tambem o espaco que a moldura
+     ocupava, e com medida fixa sobrava uma faixa em "L" na direita e embaixo.
+     O `ajustar_janela` corrige o tamanho da janela ao abrir. */
   html, body { margin:0; padding:0; width:100%; height:100%; overflow:hidden;
-    background:#0b0c11; color:#e9eaf0;
-    font-family:"Segoe UI", Tahoma, sans-serif; -ms-user-select:none; user-select:none; }
-  a { text-decoration:none; }
+    background:#050a12; color:#e6eefb;
+    font-family:"Segoe UI", Tahoma, sans-serif;
+    -ms-user-select:none; user-select:none; cursor:default; }
 
-  /* ---------- topo: arte ---------- */
-  #arte { position:absolute; left:0; top:0; right:0; height:250px;
-    background:#1a1430; background-image:url('arte.jpg');
-    background-size:cover; background-position:center; }
-  #arte .veu { position:absolute; left:0; right:0; bottom:0; height:110px;
-    background:url('data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7');
-    filter:progid:DXImageTransform.Microsoft.gradient(startColorstr='#000b0c11', endColorstr='#ff0b0c11');
-    background:-ms-linear-gradient(top, rgba(11,12,17,0), #0b0c11);
-    background:linear-gradient(to bottom, rgba(11,12,17,0), #0b0c11); }
-  /* Logo = o mesmo `logo-mini.png` do site (a faixa RAGNALINK), copiado aqui
-     como logo.png. Largura e altura vao EXPLICITAS: o IE as vezes desenha antes
-     de conhecer o tamanho do arquivo e a tela pula.
-     🚨 EXIBIDO NO TAMANHO NATIVO (140x60) DE PROPOSITO. O arquivo original tem
-     exatamente esses pixels - esticar deixa borrado, foi o que aconteceu com o
-     icone das racas. Se um dia quiser MAIOR, exporte uma versao maior da arte
-     original; nao aumente esta.
-     Obs.: nao da pra tirar uma versao grande recortando o logo-complet.png -
-     naquele emblema a personagem fica ATRAS da faixa, e o recorte traz junto o
-     vestido e a corrente dela. O mini e uma arte separada e limpa. */
-  /* Canto SUPERIOR esquerdo. Foi escolhido contra o topo-centro por contraste:
-     ali atras e ceu escuro/dirigivel, entao a logo destaca. No centro ela cairia
-     em cima do clarao alaranjado, que e o ponto de luz da arte - a logo perdia
-     nitidez e ainda competia com o foco do desenho.
-     Pra mover pro centro: trocar `left:32px` por `left:330px`. */
-  #marca { position:absolute; left:32px; top:20px; width:140px; height:60px; }
+  #fundo { position:absolute; left:0; top:0; width:1200px; height:800px;
+    background:url('fundo.png') no-repeat 0 0; }
 
-  /* Controles de janela. Existem porque o patcher roda SEM a barra do Windows
-     (window.frameless no yml): fechar, minimizar e arrastar deixam de vir de graca
-     do sistema e passam a ser nossos. Ficam colados no canto, onde a pessoa ja
-     procura por habito.
-     Os simbolos sao SVG e nao texto de proposito: "X" e travessao dependem da fonte
-     e saem tortos ou como quadrado no Internet Explorer. */
-  /* Fundo escuro discreto: sem ele os simbolos somem quando a arte esta clara
-     naquele canto, e o jogador nao acha como fechar. */
-  #janelaBt { position:absolute; right:0; top:0; background:rgba(11,12,17,.45);
-    border-bottom-left-radius:10px; }
-  #janelaBt div { display:inline-block; width:40px; height:28px; line-height:28px;
-    text-align:center; cursor:pointer; }
-  #janelaBt div:hover { background:rgba(255,255,255,.16); }
-  #janelaBt #btX:hover { background:#d94141; }
-  #janelaBt svg { vertical-align:middle; }
-  #janelaBt path { stroke:#e4e7f2; stroke-width:1.5; }
-  #janelaBt div:hover path { stroke:#fff; }
+  /* ---------------- controles de janela ---------------- */
+  /* Os simbolos ja estao PINTADOS na arte (minimizar em 820..831 e fechar em
+     850..859, na altura 32..41). Aqui so a area clicavel e o realce. */
+  .btJanela { position:absolute; top:35px; height:32px; border-radius:8px;
+    cursor:pointer; }
+  #btMin { left:1083px; width:36px; }
+  #btX   { left:1121px; width:37px; }
+  .btJanela:hover { background:rgba(255,255,255,.18); }
+  #btX:hover { background:rgba(214,64,64,.78); }
 
-  #status { position:absolute; right:18px; top:40px; height:26px; line-height:26px;
-    padding:0 12px 0 10px; border-radius:13px; background:rgba(0,0,0,.45);
-    font-size:11.5px; color:#cfd2dd; }
-  #status i { display:inline-block; width:7px; height:7px; border-radius:50%;
-    background:#6f7387; margin-right:7px; }
-  #status i.on  { background:#68d3a8; }
-  #status i.off { background:#ff6b6b; }
+  /* ---------------- faixa de status ---------------- */
+  /* Uma linha so e fundo translucido: com o topo da arte livre, a paisagem
+     aparece atras em vez de ficar tapada por um painel. O conteudo flui em
+     linha (spans inline) e nao em posicoes fixas, porque nome de raca varia
+     muito de tamanho - "Bruto" e "Demi-Humano" nao ocupam o mesmo espaco, e
+     posicao fixa faria um encavalar no outro. */
+  /* 🚨 SEM largura fixa, e ancorada pela DIREITA.
+     Com largura fixa ela sobrava dos dois lados: o conteudo varia de 637px
+     ("Inseto") a 738px ("Demi-Humano") conforme o nome da raca, e qualquer
+     numero fixo fica grande demais pra um e pequeno pro outro.
+     Sem `width` e com `right`, a caixa encolhe ate o texto e cresce pra
+     ESQUERDA - ou seja, LONGE dos simbolos de minimizar e fechar, que ficam em
+     1093..1108. O `right:150px` trava a borda direita em 1050 e garante 43px de
+     folga deles, aconteca o que acontecer com o texto.
+     Se algum dia o Internet Explorer esticar isso em vez de encolher, o
+     conserto e voltar pra `left:331px; width:736px`. */
+  #faixa { position:absolute; right:150px; top:37px; max-width:780px;
+    height:48px;
+    line-height:48px; padding:0 24px; background:rgba(8,18,30,.68);
+    border:1px solid rgba(120,180,220,.35); border-radius:24px;
+    font-size:16px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #faixa .luz { display:inline-block; width:11px; height:11px; border-radius:50%;
+    background:#6b7a8c; margin-right:9px; vertical-align:middle; }
+  #faixa .luz.on  { background:#3ddc97; }
+  #faixa .luz.off { background:#ff5a5a; }
+  #faixa .ok   { color:#3ddc97; font-weight:600; }
+  #faixa .nao  { color:#ff6b6b; font-weight:600; }
+  #faixa .num  { color:#eaf2ff; font-weight:600; }
+  #faixa .rot  { color:#93a9c2; }
+  #faixa .raca { color:#f5b83c; font-weight:700; }
+  #faixa .bon  { color:#3ddc97; font-weight:600; }
+  #faixa .sep  { color:#5b7590; margin:0 12px; }
 
-  /* ---------- faixa da raca da vez ---------- */
-  #rdv { position:absolute; left:34px; right:34px; top:264px; height:56px;
-    border:1px solid rgba(255,255,255,.12); border-radius:10px;
-    background:rgba(255,255,255,.04); display:none; }
-  #rdv .rot { position:absolute; left:16px; top:9px; font-size:9px; letter-spacing:1.3px;
-    text-transform:uppercase; color:#8b8fa3; }
-  #rdv img { position:absolute; left:16px; top:22px; width:24px; height:24px;
-    border-radius:5px; border:1px solid rgba(255,255,255,.2); -ms-interpolation-mode:nearest-neighbor; }
-  /* nome e bonus ficam num invólucro que flui: eles se posicionam sozinhos, um
-     do lado do outro. A versao anterior media o nome por JS e posicionava o
-     bonus - so que a medida saia ZERO, porque #rdv ainda estava display:none
-     na hora da leitura, e os dois se sobrepunham. Fluxo normal nao tem esse
-     problema e nao precisa de medicao nenhuma. */
-  #rdv .linha { position:absolute; left:50px; top:23px; white-space:nowrap; }
-  #rdv .nome { font-size:17px; font-weight:700; color:#fff; }
-  #rdv .bonus { font-size:12px; font-weight:700; color:#68d3a8; margin-left:12px; }
-  #rdv .tempo { position:absolute; right:16px; top:25px; font-size:12px; color:#b9bcc9; }
+  /* ---------------- lista de noticias ---------------- */
+  /* 🚨 `scroll` e nao `auto`. Com `auto` a barra so aparece quando o conteudo
+     passa da altura, e hoje o servidor tem duas noticias publicadas - entao ela
+     nunca aparecia e dava a impressao de que a rolagem estava quebrada. Com
+     `scroll` o trilho fica sempre no lugar, igual a arte desenha, e o jogador ve
+     de cara que a caixa rola. */
+  #lista { position:absolute; left:40px; top:355px; width:280px; height:195px;
+    overflow-y:scroll; overflow-x:hidden;
+    /* barra de rolagem no tom da arte. Propriedades exclusivas do Internet
+       Explorer - em outro motor seriam ignoradas, mas aqui o motor E o do IE. */
+    scrollbar-face-color:#1d3a4e; scrollbar-track-color:#0d1a26;
+    scrollbar-arrow-color:#7fb4d8; scrollbar-shadow-color:#0d1a26;
+    scrollbar-highlight-color:#0d1a26; scrollbar-3dlight-color:#0d1a26;
+    scrollbar-darkshadow-color:#0d1a26; }
+  /* Um item no formato que a ARTE desenha: a data numa coluna estreita a
+     esquerda e titulo mais resumo no meio.
+     Nao ha botao de expandir. Esta caixa e vitrine: mostra o resumo e quem
+     quiser a noticia inteira clica e le no site. Cheguei a colocar um [+] que
+     abria o resto do texto aqui dentro e foi removido - resolvia um problema que
+     nao existe e enchia a caixa de botao. */
+  .item { position:relative; padding:0 0 13px; margin:0 0 13px;
+    border-bottom:1px solid rgba(120,170,210,.16); }
+  .item .dia { position:absolute; left:2px; top:1px; width:44px;
+    font-size:13px; color:#8ea6c0; }
+  .item .cx  { margin-left:50px; margin-right:6px; cursor:pointer; }
+  .item .tit { font-size:15px; font-weight:600; color:#e6eefb; margin:0 0 3px; }
+  .item .cx:hover .tit { color:#9adcff; }
+  .item.fixa .tit { color:#f5b83c; }
+  .item.fixa .cx:hover .tit { color:#ffd27a; }
+  .item .txt { font-size:13px; color:#93a9c0; line-height:1.4; }
 
-  /* ---------- noticias ---------- */
-  #noticias { position:absolute; left:34px; right:34px; top:332px; bottom:96px;
-    overflow-y:auto; padding-right:16px; }
-  #noticias h2 { margin:0 0 12px; font-size:11px; letter-spacing:1.4px;
-    text-transform:uppercase; color:#8b8fa3; font-weight:600; }
-  .nota { border-bottom:1px solid rgba(255,255,255,.08); padding:0 0 12px; margin:0 0 12px; }
-  .nota .data { font-size:11px; color:#6f7387; }
-  .nota .tit { font-size:14px; color:#fff; font-weight:600; margin:3px 0 4px; }
-  .nota .txt { font-size:12.5px; color:#9aa0b4; line-height:1.6; margin:0; }
+  /* Medido na arte: o botao pintado ocupa 90..176 em x e 418..436 em y. */
+  #verTodas { position:absolute; left:120px; top:557px; width:115px; height:24px;
+    cursor:pointer; border-radius:5px; }
+  #verTodas:hover { background:rgba(255,255,255,.12); }
 
-  /* ---------- rodape ---------- */
-  #rodape { position:absolute; left:0; right:0; bottom:0; height:78px;
-    background:#0e1017; border-top:1px solid rgba(255,255,255,.1); }
-  /* A barra encolheu de 520 pra 340: os botoes agora ocupam a direita do rodape.
-     Se mexer na largura de um, conferir o outro - eles nao se empurram, cada um
-     tem posicao absoluta. */
-  #barra { position:absolute; left:34px; right:280px; top:16px; height:8px;
-    background:rgba(255,255,255,.08); border-radius:4px; overflow:hidden; }
-  #barra i { display:block; width:0; height:8px; background:#7b5cff; }
-  #estado { position:absolute; left:34px; right:280px; top:32px; font-size:11.5px; color:#9aa0b4; }
+  /* ---------------- painel de progresso ---------------- */
+  /* A moldura arredondada continua sendo a pintada; daqui pra dentro e ao vivo.
+     🚨 Duas medidas que ja deram errado aqui. Nada pode passar de x=880: a borda
+     direita pintada do painel esta em x=901. E o texto comeca em 612, nao em
+     604: a borda de cima esta em 604 e o texto encostado nela ficava com cara de
+     defeito. O painel util e 604..688, e o conteudo se distribui com 8px de
+     folga em cima e 6 embaixo. */
+  #estado { position:absolute; left:193px; top:612px; width:555px;
+    font-size:17px; font-weight:600; color:#eaf2ff;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #trilho { position:absolute; left:193px; top:640px; width:555px; height:19px;
+    background:#0b1521; border-radius:9px; overflow:hidden;
+    border:1px solid rgba(70,120,165,.5); }
+  #barra { width:0; height:100%; background:#0098ea; }
+  #barra.erro { background:#e04b4b; }
+  #barra.pronto { background:#3ddc97; }
+  #pct { position:absolute; left:758px; top:626px; width:122px; text-align:right;
+    font-size:29px; font-weight:700; color:#4fc3f7; }
+  #detalhes { position:absolute; left:193px; top:664px; width:555px;
+    font-size:14px; color:#8ea3ba;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #detalhes b { color:#cfe0f2; font-weight:600; }
 
-  /* Os tres botoes tem a MESMA ALTURA e o mesmo alinhamento, entao leem como um
-     conjunto. O JOGAR e mais largo e preenchido de proposito: e a acao que o
-     jogador vem fazer 95% das vezes, e achatar os tres no mesmo peso faria o
-     olho ter que procurar. Fechar fica ao lado, mas so ganha cor no hover -
-     assim nao compete com o JOGAR nem convida ao clique errado. */
-  #btConfig, #btJogar {
-    position:absolute; top:16px; height:44px; line-height:44px; text-align:center;
-    border-radius:22px; cursor:pointer; }
+  /* ---------------- botoes ---------------- */
+  /* Todos ja estao PINTADOS. Estes retangulos sao a area clicavel e os estados,
+     e as medidas saem da propria arte - chutar aqui ja deu realce menor que o
+     botao uma vez. */
+  .zona { position:absolute; cursor:pointer; }
+  .zona i { display:block; width:100%; height:100%; border-radius:11px; }
+  .zona:hover i { background:rgba(255,255,255,.14); }
+  .zona:active i { background:rgba(0,0,0,.28); }
 
-  /* NAO EXISTE botao Fechar aqui de proposito: quem fecha e o X da barra do
-     Windows. Ele volta no dia em que a janela virar frameless (`.frameless()`
-     do web-view, exige recompilar o patcher) - sem barra, sem X, e o jogador
-     precisaria de um Fechar na tela. */
+  /* Alturas medidas na arte em 1200x800, varrendo a coluna x=975 por cor: o
+     Criar Conta (azul) vai de 596 a 644, o VIP (dourado) de 653 a 698. Antes eu
+     tinha convertido as medidas de 900x600 arredondando pra cima, e sobrava
+     realce embaixo dos dois. */
+  #btCriar { left:957px; top:596px; width:200px; height:48px; }
+  #btVip   { left:957px; top:653px; width:200px; height:45px; }
+  #btJogar { left:424px; top:703px; width:347px; height:68px; }
+  #btJogar i { border-radius:33px; }
+  /* Desligado: o Jogar so libera quando o patcher responde. Sem filter no IE, o
+     jeito de "apagar" o botao e uma camada cinza-azulada por cima. */
+  #btJogar.off { cursor:default; }
+  #btJogar.off i { background:rgba(46,56,72,.66); }
+  #btJogar.off:hover i, #btJogar.off:active i { background:rgba(46,56,72,.66); }
 
-  /* Configurar e so a engrenagem: redonda, 44x44, mesma altura do JOGAR.
-     O `title` da o balaozinho nativo do Windows explicando o que e - sem ele
-     um icone sozinho vira adivinhacao pro jogador. */
-  #btConfig { right:196px; width:44px; border-radius:22px; color:#c3c7d6;
-    background:transparent; border:1px solid rgba(255,255,255,.18); line-height:42px; }
-  #btConfig svg { vertical-align:middle; opacity:.8; }
-  #btConfig:hover { border-color:rgba(255,255,255,.45); }
-  #btConfig:hover svg { opacity:1; }
+  .link { position:absolute; top:733px; height:29px; cursor:pointer;
+    border-radius:5px; }
+  .link:hover { background:rgba(255,255,255,.12); }
+  #lnSite { left:44px;  width:95px; }
+  #lnFace { left:161px; width:100px; }
+  #lnDisc { left:271px; width:100px; }
 
-  #btJogar { right:34px; width:150px; background:#7b5cff; color:#fff;
-    font-size:15px; font-weight:700; }
-  #btJogar:hover { background:#8b70ff; }
-  #btJogar.off { background:#2a2b36; color:#6f7387; cursor:default; }
-  #btJogar.off:hover { background:#2a2b36; }
-
-  /* Notícia fixada ganha uma barrinha à esquerda. Serve pra aviso que nao pode
-     passar batido (manutencao, evento comecando) se destacar de novidade comum. */
-  .nota.fixa { border-left:3px solid #7b5cff; padding-left:12px; }
-  /* Comeca escondido: so aparece quando chega noticia DE VERDADE do site. No texto
-     de boas-vindas nao faz sentido convidar a "ler mais" - nao ha o que ler. */
-  #notLink { display:none; margin-top:9px; font-size:11.5px; color:#a48cff; cursor:pointer; }
-  #notLink:hover { color:#c9b8ff; }
+  #versao { position:absolute; right:40px; top:737px; font-size:14px;
+    color:#7d93ab; }
 </style>
 </head>
 <body>
 
-<div id="arte" onmousedown="arrastar()"><div class="veu"></div>
-  <img id="marca" src="logo.png" alt="RagnaLinK" ondragstart="return false;">
-  <div id="janelaBt" onmousedown="pararAqui(event)">
-    <div id="btMin" onclick="chamar('minimize')" title="Minimizar"><svg width="11" height="11" viewBox="0 0 11 11"><path d="M0,6 H11"/></svg></div>
-    <div id="btX" onclick="chamar('exit')" title="Fechar"><svg width="11" height="11" viewBox="0 0 11 11"><path d="M0.5,0.5 L10.5,10.5 M10.5,0.5 L0.5,10.5"/></svg></div>
-  </div>
-  <div id="status"><i id="statusLuz"></i><span id="statusTxt">verificando...</span></div>
+<!-- Arrastar pega no FUNDO. Vai no onmousedown, e nao no onclick: do lado Rust
+     o truque e fingir um clique na barra de titulo, e o Windows so entra no
+     laco de mover enquanto o botao esta pressionado. -->
+<div id="fundo" onmousedown="arrastar()"></div>
+
+<div class="btJanela" id="btMin" onmousedown="pararAqui(event)" onclick="chamar('minimize')" title="Minimizar"></div>
+<div class="btJanela" id="btX"   onmousedown="pararAqui(event)" onclick="chamar('exit')"     title="Fechar"></div>
+
+<div id="faixa" onmousedown="pararAqui(event)">
+  <span class="luz" id="luz"></span><span id="vStatus" class="rot">verificando...</span><span class="sep">&middot;</span><span id="vJogadores" class="num">--</span><span class="sep">&middot;</span><span class="rot">Ra&ccedil;a da vez:</span> <span id="vRaca" class="raca">--</span> <span id="vBonus" class="bon"></span><span id="vTempo"></span>
 </div>
 
-<div id="rdv">
-  <span class="rot">Raça da Vez</span>
-  <img id="rdvIcone" src="" alt="">
-  <span class="linha"><span class="nome" id="rdvNome"></span><span class="bonus" id="rdvBonus"></span></span>
-  <span class="tempo" id="rdvTempo"></span>
-</div>
+<div id="lista"></div>
+<div id="verTodas" onmousedown="pararAqui(event)" onclick="abrir('/noticias')" title="Ver todas as notícias no site"></div>
 
-<div id="noticias">
-  <h2>Novidades</h2>
-  <div id="listaNoticias">
-    <!-- O texto abaixo e a RESERVA: fica na tela ate o site responder com uma
-         noticia de verdade. Servidor sem noticia nenhuma, ou site fora do ar,
-         continua com uma tela apresentavel em vez de um buraco. -->
-    <div class="nota" id="notaBloco">
-      <div class="data" id="notData">--/--/----</div>
-      <div class="tit" id="notTit">Bem-vindo ao RagnaLinK</div>
-      <p class="txt" id="notTxt">As novidades aparecem aqui assim que o site publicar. Enquanto isso,
-        clique em Jogar para entrar.</p>
-      <div id="notLink" onclick="abrirNoticiaNoSite()">Ler no site &rsaquo;</div>
-    </div>
-  </div>
-</div>
+<div id="estado">Verificando atualizações...</div>
+<div id="trilho"><div id="barra"></div></div>
+<div id="pct"></div>
+<div id="detalhes"></div>
 
-<div id="rodape">
-  <div id="barra"><i id="barraFill"></i></div>
-  <div id="estado">Verificando atualizações...</div>
-  <div id="btConfig" onclick="chamar('setup')" title="Configurar (resolução, som, tela cheia)"><svg width="18" height="18" viewBox="0 0 24 24"><path fill="#c3c7d6" d="M19.14,12.94c0.04-0.3,0.06-0.61,0.06-0.94c0-0.32-0.02-0.64-0.07-0.94l2.03-1.58c0.18-0.14,0.23-0.41,0.12-0.61l-1.92-3.32c-0.12-0.22-0.37-0.29-0.59-0.22l-2.39,0.96c-0.5-0.38-1.03-0.7-1.62-0.94L14.4,2.81c-0.04-0.24-0.24-0.41-0.48-0.41h-3.84c-0.24,0-0.43,0.17-0.47,0.41L9.25,5.35C8.66,5.59,8.12,5.92,7.63,6.29L5.24,5.33c-0.22-0.08-0.47,0-0.59,0.22L2.74,8.87C2.62,9.08,2.66,9.34,2.86,9.48l2.03,1.58C4.84,11.36,4.8,11.69,4.8,12s0.02,0.64,0.07,0.94l-2.03,1.58c-0.18,0.14-0.23,0.41-0.12,0.61l1.92,3.32c0.12,0.22,0.37,0.29,0.59,0.22l2.39-0.96c0.5,0.38,1.03,0.7,1.62,0.94l0.36,2.54c0.05,0.24,0.24,0.41,0.48,0.41h3.84c0.24,0,0.44-0.17,0.47-0.41l0.36-2.54c0.59-0.24,1.13-0.56,1.62-0.94l2.39,0.96c0.22,0.08,0.47,0,0.59-0.22l1.92-3.32c0.12-0.22,0.07-0.47-0.12-0.61L19.14,12.94z M12,15.6c-1.98,0-3.6-1.62-3.6-3.6s1.62-3.6,3.6-3.6s3.6,1.62,3.6,3.6S13.98,15.6,12,15.6z"/></svg></div>
-  <div id="btJogar" class="off" onclick="jogar()">JOGAR</div>
-</div>
+<div class="zona" id="btCriar" onmousedown="pararAqui(event)" onclick="abrir('/Conta/Registro')" title="Criar uma conta no site"><i></i></div>
+<div class="zona" id="btVip"   onmousedown="pararAqui(event)" onclick="abrir('/PainelControle#doacoes')" title="VIP e doações"><i></i></div>
+<div class="zona off" id="btJogar" onmousedown="pararAqui(event)" onclick="jogar()"><i></i></div>
+
+<div class="link" id="lnSite" onmousedown="pararAqui(event)" onclick="abrir('/')" title="Site oficial"></div>
+<div class="link" id="lnFace" onmousedown="pararAqui(event)" onclick="abrirFora(URL_FACEBOOK)" title="Facebook"></div>
+<div class="link" id="lnDisc" onmousedown="pararAqui(event)" onclick="abrirFora(URL_DISCORD)" title="Discord"></div>
+
+<div id="versao">Vers&atilde;o 1.0</div>
 
 <script>
-/* ------------------------------------------------------------------ */
-/* ponte com o patcher                                                 */
-/* ------------------------------------------------------------------ */
+/* ==================================================================== */
+/* ponte com o patcher                                                  */
+/* ==================================================================== */
 var pronto = false;
 
-/* ATENCAO AO FORMATO - foi o bug de 27/07 que deixou TODOS os botoes mortos.
+/* 🚨 ATENCAO AO FORMATO - foi o bug que deixou TODOS os botoes mortos.
    O invoke_handler do patcher (rpatchur/src/ui.rs) casa a mensagem por STRING
    CRUA:
 
@@ -216,113 +239,150 @@ var pronto = false;
            "play" => ..., "setup" => ..., "exit" => ...,
            "start_update" => ..., "cancel_update" => ...,
            "reset_cache" => ..., "manual_patch" => ...,
+           "ajustar_janela" => ..., "moldar_janela" => ...,
+           "minimize" => ..., "drag" => ...,
            request => handle_json_request(webview, request),
        }
 
-   Ou seja: os comandos embutidos vao como TEXTO PURO. Mandar
-   {"function":"play"} cai no ramo JSON, que so conhece 'login' e 'open_url' -
-   o patcher escreve "Unknown function 'play'" no log e NAO FAZ NADA. Sem erro
-   na tela, sem exception no JS: silencio total. Era esse o sintoma. */
+   Comando embutido vai como TEXTO PURO. Mandar {"function":"play"} cai no ramo
+   JSON, que so conhece 'login' e 'open_url' - o patcher escreve "Unknown
+   function" num log sem console e NAO FAZ NADA. Falha 100% silenciosa. */
 function chamar(nome) {
-  try {
-    external.invoke(nome);
-  } catch (e) { /* aberto fora do patcher (num navegador, por exemplo) */ }
+  try { external.invoke(nome); } catch (e) { /* aberto fora do patcher */ }
 }
 
-/* O formato JSON existe, mas SO vale para 'login' e 'open_url' (os unicos dois
-   que o handle_json_request reconhece). Guardado aqui pro dia que a gente puser
-   login pela tela do patcher ou um link que abra no navegador do sistema. */
+/* O formato JSON vale SO para 'login' e 'open_url'. */
 function chamarJson(nome, params) {
   try {
     external.invoke(JSON.stringify({ "function": nome, "parameters": params || {} }));
   } catch (e) { }
 }
 
+/* 🚨 NAO usar `typeof external.invoke` como guarda. No Internet Explorer o
+   `external` e objeto COM do hospedeiro e o typeof devolve "undefined" para
+   metodos que existem e funcionam. Chamar dentro de try/catch, sempre. */
 function jogar() { if (pronto) { chamar('play'); } }
-
-/* Arrastar a janela pela arte. Vai no ONMOUSEDOWN, nao no onclick: do lado Rust o
-   truque e fingir um clique na barra de titulo, e o Windows so entra no laco de
-   mover enquanto o botao do mouse esta pressionado. No onclick ja seria tarde. */
 function arrastar() { chamar('drag'); }
 
-/* Impede que o mousedown nos botoes de janela suba ate a arte e vire arrasto -
-   senao minimizar e fechar ficariam quase impossiveis de acertar. */
+/* Impede que o mousedown num painel ou botao suba ate o fundo e vire arrasto. */
 function pararAqui(e) {
   e = e || window.event;
   if (e.stopPropagation) { e.stopPropagation(); } else { e.cancelBubble = true; }
 }
 
-/* PATCH MANUAL - sem botao na tela, so por Ctrl+Shift+M.
-   O recurso e util (aplica um .thor do disco, sem passar pelo servidor) mas e
-   ferramenta de bastidor: serve pra TESTAR um patch antes de publicar, e pra
-   socorrer um jogador com download quebrado mandando o arquivo por fora.
-   Deixar visivel so convidaria o jogador a escolher um arquivo qualquer e
-   aplicar dentro da GRF dele. Fica aqui, escondido e funcionando. */
+/* PATCH MANUAL - sem botao na tela, so por Ctrl+Shift+M. Aplica um .thor do
+   disco sem passar pelo servidor: serve pra testar um patch antes de publicar e
+   pra socorrer um jogador com download quebrado. Deixar visivel so convidaria o
+   jogador a escolher um arquivo qualquer e aplicar dentro da GRF dele. */
 document.onkeydown = function (e) {
   e = e || window.event;
   if (e.ctrlKey && e.shiftKey && e.keyCode === 77) { chamar('manual_patch'); }
 };
 
-function texto(t)   { document.getElementById('estado').innerHTML = t; }
-function progresso(p) { document.getElementById('barraFill').style.width = p + '%'; }
+function id(x) { return document.getElementById(x); }
+function texto(t) { id('estado').innerHTML = t; }
+
+function progresso(p, classe) {
+  if (p < 0) { p = 0; } if (p > 100) { p = 100; }
+  id('barra').style.width = p + '%';
+  id('barra').className = classe || '';
+  id('pct').innerHTML = p > 0 ? (p + '%') : '';
+}
+
+function detalhes(t) { id('detalhes').innerHTML = t || ''; }
 
 function liberar(v) {
   pronto = v;
-  document.getElementById('btJogar').className = v ? '' : 'off';
+  id('btJogar').className = v ? 'zona' : 'zona off';
 }
 
-/* --- as cinco funcoes que o PATCHER chama. Nao renomear. --- */
+/* ==================================================================== */
+/* as seis funcoes que o PATCHER chama. Nao renomear.                   */
+/* ==================================================================== */
 function patchingStatusReady() {
   marcarResposta();
-  progresso(100); texto('Tudo atualizado. Bom jogo!'); liberar(true);
+  progresso(100, 'pronto');
+  texto('Tudo atualizado. Bom jogo!');
+  detalhes('');
+  liberar(true);
 }
 function patchingStatusError(msg) {
   marcarResposta();
-  texto('Erro na atualização: ' + msg); liberar(true);   /* libera pra nao prender o jogador */
+  progresso(100, 'erro');
+  texto('Erro na atualização: ' + msg);
+  detalhes('');
+  liberar(true);   /* libera assim mesmo: nao prender o jogador por causa do patch */
 }
 function patchingStatusDownloading(baixados, total, bytesPorSeg) {
   var pct = total > 0 ? Math.floor((baixados * 100) / total) : 0;
-  var vel = bytesPorSeg > 0 ? ' (' + (bytesPorSeg / 1048576).toFixed(1) + ' MB/s)' : '';
   progresso(pct);
-  texto('Baixando ' + baixados + ' de ' + total + vel); liberar(false);
+  texto('Baixando atualizações');
+  /* 🚨 O patcher entrega CONTAGEM DE PATCHES e velocidade - nao entrega nome de
+     arquivo nem tempo restante. A arte previa tres campos aqui; em vez de
+     inventar numero, mostramos os dois que existem de verdade. */
+  var d = 'Patch <b>' + baixados + '</b> de <b>' + total + '</b>';
+  if (bytesPorSeg > 0) {
+    d += ' &nbsp;|&nbsp; Velocidade: <b>' + (bytesPorSeg / 1048576).toFixed(2) + ' MB/s</b>';
+  }
+  detalhes(d);
+  liberar(false);
 }
 function patchingStatusInstalling(instalados, total) {
   var pct = total > 0 ? Math.floor((instalados * 100) / total) : 0;
   progresso(pct);
-  texto('Aplicando ' + instalados + ' de ' + total + '...'); liberar(false);
+  texto('Aplicando atualizações');
+  detalhes('Patch <b>' + instalados + '</b> de <b>' + total + '</b>');
+  liberar(false);
 }
-function patchingStatusPatchApplied(nome) { texto('Patch aplicado: ' + nome); }
-/* O patcher chama esta se pedirem atualizacao com uma ja em andamento.
-   Precisa EXISTIR: ele injeta a chamada por eval, e funcao indefinida vira
-   erro de script dentro da janela. */
+function patchingStatusPatchApplied(nome) {
+  detalhes('Aplicado: <b>' + nome + '</b>');
+}
+/* O patcher chama esta se pedirem atualizacao com uma ja em andamento. Precisa
+   EXISTIR: ele injeta a chamada por eval, e funcao indefinida vira erro de
+   script dentro da janela. */
 function notificationInProgress() { texto('Atualização já está em andamento...'); }
 
-/* ------------------------------------------------------------------ */
-/* conteudo ao vivo do site (opcional - se falhar, some sem barulho)    */
-/* ------------------------------------------------------------------ */
+/* ==================================================================== */
+/* conteudo ao vivo do site (opcional - se falhar, some sem barulho)     */
+/* ==================================================================== */
+/* Versao mostrada no rodape. Um lugar so pra mexer. */
+var VERSAO = '1.0';
 var SITE = 'https://ragnalink.com.br';
-// Quando a pagina esta HOSPEDADA no proprio site, usa a origem dela. Duas
-// vantagens: as chamadas viram MESMA ORIGEM (o IE bloqueia XHR entre origens
-// diferentes quando a pagina vem de file://), e o endereco fixo acima nao
-// precisa ser mexido se um dia o dominio mudar. Aberta por file:// o
-// location.protocol e 'file:' e o valor fixo acima continua valendo.
+
+/* 🚨 PREENCHER. Enquanto estiverem vazios, os dois atalhos do rodape abrem o
+   site em vez da rede - de proposito. Botao que leva a 404 e pior que botao que
+   leva ao lugar generico: o jogador acha que o servidor esta quebrado. */
+var URL_FACEBOOK = '';
+var URL_DISCORD  = '';
+
+/* Quando a pagina esta HOSPEDADA no proprio site, usa a origem dela: as
+   chamadas viram MESMA ORIGEM (o IE bloqueia XHR entre origens quando a pagina
+   vem de file://) e o endereco fixo acima nao precisa ser mexido se o dominio
+   mudar. Aberta por file:// o protocolo e 'file:' e o valor fixo continua. */
 if (location.protocol === 'http:' || location.protocol === 'https:') {
-    SITE = location.protocol + '//' + location.host;
+  SITE = location.protocol + '//' + location.host;
 }
 
+/* 🚨 NUNCA usar <a href> nesta pagina. Link normal navega a PROPRIA JANELA do
+   patcher: o jogador perde a tela e o botao Jogar, e nao ha barra de navegador
+   nem botao voltar pra desfazer. O open_url do rpatchur abre no navegador
+   PADRAO do sistema. */
+function abrir(caminho) { chamarJson('open_url', { url: SITE + caminho }); }
+function abrirFora(url) { chamarJson('open_url', { url: url || SITE }); }
+
 /* 🚨 ARMADILHA DO IE: ele CACHEIA resposta de XHR GET pela URL. Sem o parametro
-   descartavel abaixo, da segunda consulta em diante voltaria a MESMA resposta da
-   primeira - o numero de jogadores e o contador da raca ficariam congelados
-   enquanto a janela estivesse aberta, e pareceria que o site e que travou. */
+   descartavel abaixo, da segunda consulta em diante voltaria a MESMA resposta
+   da primeira - jogadores online e contador da raca ficariam congelados
+   enquanto a janela estivesse aberta, e pareceria que o site travou. */
 var seq = 0;
 function buscar(url, aoReceber) {
   seq = seq + 1;
   var sep = url.indexOf('?') >= 0 ? '&' : '?';
   var x = new XMLHttpRequest();
-  try { x.open('GET', url + sep + '_=' + new Date().getTime() + '.' + seq, true); } catch (e) { return; }
+  try { x.open('GET', url + sep + '_=' + new Date().getTime() + '.' + seq, true); }
+  catch (e) { return; }
   x.onreadystatechange = function () {
-    if (x.readyState !== 4) { return; }
-    if (x.status !== 200) { return; }
+    if (x.readyState !== 4 || x.status !== 200) { return; }
     var dados;
     try { dados = JSON.parse(x.responseText); } catch (e) { return; }
     aoReceber(dados);
@@ -330,67 +390,70 @@ function buscar(url, aoReceber) {
   try { x.send(); } catch (e) { }
 }
 
-var rdvSegundos = -1;      /* -1 = ainda nao sabemos */
-var rdvVisivel  = false;
+function escapar(t) {
+  return String(t == null ? '' : t)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
 
-function rdvDesenhaTempo() {
-  var alvo = document.getElementById('rdvTempo');
-  if (rdvSegundos <= 0) { alvo.innerHTML = 'Sorteando a próxima...'; return; }
+function pintarStatus(d) {
+  if (!d) { return; }
+  var on = !!d.online;
+  id('luz').className = 'luz ' + (on ? 'on' : 'off');
+  id('vStatus').className = on ? 'ok' : 'nao';
+  id('vStatus').innerHTML = on ? 'Online' : 'Offline';
+  var n = (on && d.jogadores >= 0) ? d.jogadores : 0;
+  id('vJogadores').innerHTML = n + (n === 1 ? ' jogador' : ' jogadores');
+}
+
+var rdvSegundos = -1;
+function rdvTempo() {
+  var alvo = id('vTempo');
+  if (rdvSegundos < 0) { alvo.innerHTML = ''; return; }
+  if (rdvSegundos === 0) {
+    alvo.innerHTML = '<span class="sep">&middot;</span><span class="rot">sorteando</span>';
+    return;
+  }
   var h = Math.floor(rdvSegundos / 3600), m = Math.floor((rdvSegundos % 3600) / 60);
-  alvo.innerHTML = 'Muda em ' + (h > 0 ? (h + 'h ' + m + 'min') : (m + 'min'));
+  alvo.innerHTML = '<span class="sep">&middot;</span><span class="rot">muda em ' +
+                   (h > 0 ? (h + 'h ' + m + 'min') : (m + 'min')) + '</span>';
 }
 
 function pintarRdv(d) {
   if (!d) { return; }
-  if (!d.ativa) {
-    /* Sem raca valendo. Se a faixa JA esta na tela, nao some com ela no meio da
-       sessao - a tela inteira pularia. Mostra que esta trocando e segue. */
-    if (rdvVisivel) { rdvSegundos = 0; rdvDesenhaTempo(); }
-    return;
-  }
-  document.getElementById('rdvIcone').src = SITE + '/NewLayout/images/racas/' + d.racaSlug + '.png';
-  document.getElementById('rdvNome').innerHTML = d.racaNome;
-  document.getElementById('rdvBonus').innerHTML = d.bonusExp > 0 ? ('+' + d.bonusExp + '% EXP') : '';
+  if (!d.ativa) { rdvSegundos = 0; rdvTempo(); return; }
+  id('vRaca').innerHTML = escapar(d.racaNome);
+  id('vBonus').innerHTML = d.bonusExp > 0 ? ('+' + d.bonusExp + '% EXP') : '';
   rdvSegundos = d.segundosRestantes;
-  rdvDesenhaTempo();
-  document.getElementById('rdv').style.display = 'block';
-  rdvVisivel = true;
+  rdvTempo();
 }
 
-/* 🚨 NUNCA usar <a href> aqui. Link normal navega a PROPRIA JANELA do patcher pro
-   site: o jogador perde a tela, perde o botao JOGAR, e nao tem barra de navegador
-   nem botao voltar pra desfazer - fica presp num site dentro de uma janela de 800x600.
-   O 'open_url' do rpatchur abre no navegador PADRAO do sistema (ui.rs -> open::that).
-   Ele e uma das duas unicas funcoes que usam o formato JSON; as demais vao como
-   texto puro (ver o comentario do `chamar`). */
-/* ================== LINK "Ler no site" — DESLIGADO ==================
-   O binario v0.3.0 do rpatchur (07/05/2021) NAO tem o `open_url`: ele so entrou no
-   fonte em 19/05/2021, doze dias DEPOIS da release. O patcher recebe o JSON, nao
-   reconhece a funcao, escreve "Unknown function" num log sem console e nao faz nada -
-   falha 100% silenciosa.
-   Por isso o link fica escondido: botao morto na tela e pior que botao ausente.
-
-   PRA LIGAR: compile o rpatchur do fonte deste fork (o `open_url` ja esta la) e troque
-   a linha abaixo para `true`. Nao precisa mexer em mais nada.
-
-   🚨 NAO usar `typeof external.invoke` como guarda em lugar nenhum desta pagina. No
-   Internet Explorer o `external` e objeto COM do hospedeiro e o typeof devolve
-   "undefined" para metodos que existem e funcionam. Chamar dentro de try/catch. */
-var TEM_OPEN_URL = true;
-
-function abrirNoticiaNoSite() {
-  chamarJson('open_url', { url: SITE + '/noticias' });
-}
-
+/* A API de hoje devolve UMA noticia (objeto). Se um dia virar lista, este
+   codigo ja aceita as duas formas - assim o dia da troca nao quebra o patcher
+   que ja esta na maquina dos jogadores. */
 function pintarNoticia(d) {
-  /* Objeto vazio = nao ha noticia publicada. Sai sem mexer em nada e o texto de
-     boas-vindas continua valendo. */
-  if (!d || !d.titulo) { return; }
-  document.getElementById('notData').innerHTML = d.data;
-  document.getElementById('notTit').innerHTML  = d.titulo;
-  document.getElementById('notTxt').innerHTML  = d.resumo;
-  document.getElementById('notaBloco').className = d.fixada ? 'nota fixa' : 'nota';
-  document.getElementById('notLink').style.display = TEM_OPEN_URL ? 'block' : 'none';
+  if (!d) { return; }
+  var itens = (typeof d.length === 'number') ? d : [d];
+  var validos = [], i;
+  for (i = 0; i < itens.length; i++) {
+    if (itens[i] && itens[i].titulo) { validos.push(itens[i]); }
+  }
+  if (!validos.length) { return; }
+
+  var html = '';
+  for (i = 0; i < validos.length && i < 8; i++) {
+    var n = validos[i];
+    var d = escapar(n.data);
+    /* A data sai como dd/MM na coluna estreita e o ano vai pro balaozinho do
+       Windows: "28/07/2026" nao cabe em 44px, e o ano raramente importa numa
+       lista das ultimas cinco. */
+    html += '<div class="item' + (n.fixada ? ' fixa' : '') + '">' +
+            '<div class="dia" title="' + d + '">' + d.substring(0, 5) + '</div>' +
+            '<div class="cx" onclick="abrir(\'/noticias\')">' +
+            '<div class="tit">' + escapar(n.titulo) + '</div>' +
+            '<div class="txt">' + escapar(n.resumo) + '</div>' +
+            '</div></div>';
+  }
+  id('lista').innerHTML = html;
 }
 
 /* -------- o unico relogio da pagina: bate de 10 em 10 segundos -------- */
@@ -398,82 +461,60 @@ var tique = 0;
 setInterval(function () {
   tique = tique + 1;
 
-  /* 1) o contador desce SOZINHO, sem consultar o site. Consultar de segundo em
-        segundo so pra ver o relogio andar seria desperdicio. */
+  /* o contador da raca desce sozinho, sem consultar o site */
   if (rdvSegundos > 0) {
     rdvSegundos = rdvSegundos - 10;
     if (rdvSegundos < 0) { rdvSegundos = 0; }
-    rdvDesenhaTempo();
+    rdvTempo();
   }
 
-  /* 2) jogadores online: a cada 60 s */
   if (tique % 6 === 0) { buscar(SITE + '/api/status', pintarStatus); }
 
-  /* 3) raca: a cada 60 s. Mas quando o contador zera, aperta pra 20 s - a troca
-        demora ate ~6 min pra chegar aqui (o rAthena so grava as variaveis
-        globais no banco a cada 5 min, e o site ainda tem 60 s de cache), entao
-        vale perguntar mais vezes justamente na janela em que muda. */
+  /* raca: a cada 60 s. Quando o contador zera, aperta pra 20 s - a troca demora
+     ate ~6 min pra chegar aqui (o rAthena so grava as variaveis globais no
+     banco a cada 5 min, e o site ainda tem 60 s de cache), entao vale perguntar
+     mais vezes justamente na janela em que muda. */
   if ((rdvSegundos <= 0 && tique % 2 === 0) || tique % 6 === 0) {
     buscar(SITE + '/api/raca-da-vez', pintarRdv);
   }
 
-  /* 4) noticia: a cada 5 min. Muda de semana em semana, nao de minuto em minuto -
-        consultar mais que isso so gastaria banco por nada. */
+  /* noticia: a cada 5 min. Muda de semana em semana, nao de minuto em minuto. */
   if (tique % 30 === 0) { buscar(SITE + '/api/noticias', pintarNoticia); }
 }, 10000);
 
-/* ------------------------------------------------------------------ */
-/* rede de seguranca                                                    */
-/* ------------------------------------------------------------------ */
-/* O botao Jogar so libera quando o patcher responde Ready ou Error. Se
-   o servidor de patch estiver fora, lento ou inalcancavel, essa resposta
-   pode demorar muito ou nao vir - e o jogador ficaria preso olhando
-   "Verificando atualizacoes" sem conseguir entrar.
+/* ==================================================================== */
+/* rede de seguranca                                                     */
+/* ==================================================================== */
+/* O Jogar so libera quando o patcher responde Ready ou Error. Se o servidor de
+   patch estiver fora, lento ou inalcancavel, essa resposta pode demorar muito
+   ou nao vir - e o jogador ficaria preso olhando "Verificando atualizacoes".
    Nunca deixe a possibilidade de jogar depender de o patch responder. */
 var LIMITE_MS = 20000;
 var respondeu = false;
-
 function marcarResposta() { respondeu = true; }
 
 setTimeout(function () {
   if (respondeu) { return; }
   texto('Não foi possível verificar atualizações. Você pode entrar assim mesmo.');
   progresso(0);
+  detalhes('');
   liberar(true);
 }, LIMITE_MS);
 
-/* se a faixa da Raca da Vez nao aparecer, as noticias sobem e ocupam o espaco
-   em vez de deixar um vao no meio da tela */
-function ajustarAltura() {
-  /* So o TOPO. A altura vem do `bottom` no CSS, entao o bloco estica sozinho ate
-     o rodape - mexer na altura aqui voltaria a fixar em pixels e reabriria o vao
-     que a gente acabou de fechar. */
-  if (document.getElementById('rdv').style.display !== 'block') {
-    document.getElementById('noticias').style.top = '270px';
-  }
-}
-
-/* dispara o update assim que a pagina abre */
-/* Antes de tudo: encaixar a janela no componente. Sem isto sobra uma faixa
-   branca na direita e embaixo quando o modo sem moldura esta ligado.
-   Inofensivo quando a janela TEM moldura - o programa so reafirma o tamanho. */
+/* ==================================================================== */
+/* abertura                                                             */
+/* ==================================================================== */
+/* ORDEM IMPORTA. Primeiro encaixar a janela no tamanho certo, so depois
+   recortar: na ordem trocada existe um instante com a janela grande e ja
+   recortada, que pisca feio na abertura. */
 chamar('ajustar_janela');
+chamar('moldar_janela');
 
 texto('Verificando atualizações...');
 chamar('start_update');
-setTimeout(ajustarAltura, 1500);
 
-function pintarStatus(d) {
-  if (!d) { return; }
-  var luz = document.getElementById('statusLuz');
-  luz.className = d.online ? 'on' : 'off';
-  document.getElementById('statusTxt').innerHTML =
-    d.online ? (d.status + ' · ' + d.jogadores + (d.jogadores === 1 ? ' jogador' : ' jogadores'))
-             : (d.status || 'Offline');
-}
-
-buscar(SITE + '/api/raca-da-vez', pintarRdv);
 buscar(SITE + '/api/status', pintarStatus);
+buscar(SITE + '/api/raca-da-vez', pintarRdv);
 buscar(SITE + '/api/noticias', pintarNoticia);
 </script>
 </body>

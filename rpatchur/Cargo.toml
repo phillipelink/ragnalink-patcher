@@ -49,7 +49,10 @@ advisory-lock = "0.3"
 # winuser/windef/minwindef/processthreadsapi entraram para os comandos de janela
 # (minimizar e arrastar) que a interface chama quando o patcher roda sem a barra
 # de titulo do Windows. Ver `janela_principal` em src/ui.rs.
-winapi = { version = "0.3.6", features = ["shellapi", "winuser", "windef", "minwindef", "processthreadsapi"] }
+# wingdi entrou depois, para o `moldar_janela`: e de la que vem CreateRectRgn,
+# SetRectRgn, CombineRgn e DeleteObject, que montam a regiao usada para recortar
+# a janela no formato da arte.
+winapi = { version = "0.3.6", features = ["shellapi", "winuser", "windef", "minwindef", "processthreadsapi", "wingdi"] }
 
 [dev-dependencies]
 twox-hash = "1.5"

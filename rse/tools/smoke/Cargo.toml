@@ -1,0 +1,18 @@
+[package]
+name = "rse-smoke"
+version = "0.1.0"
+edition = "2018"
+rust-version = "1.68.2"
+description = "RagnaShield Engine — prova o circuito do servidor de ponta a ponta"
+publish = false
+
+# Sem dependencia de terceiros, pela mesma razao do rse-protocol: um cliente
+# HTTP completo traria dezenas de crates para fazer dois POST contra um endereco
+# local. O que esta ferramenta precisa de HTTP cabe em 40 linhas de std.
+
+[[bin]]
+name = "rse-smoke"
+path = "src/main.rs"
+
+[dependencies]
+rse-protocol = { path = "../../protocol" }

@@ -1,3 +1,4 @@
+use std::env;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
@@ -5,6 +6,7 @@ use std::path::{Path, PathBuf};
 use super::get_patcher_name;
 use anyhow::{Context, Result};
 use serde::Deserialize;
+use url::Url;
 
 #[derive(Deserialize, Clone)]
 pub struct PatcherConfiguration {
@@ -48,7 +50,15 @@ pub struct SetupConfiguration {
 
 #[derive(Deserialize, Clone)]
 pub struct WebConfiguration {
-    pub index_url: String, // URL of the index file implementing the UI
+    /// Onde esta a interface. Aceita duas formas:
+    ///   - caminho RELATIVO (ex.: `patcher/index.html`), resolvido a partir da
+    ///     pasta do executavel. E a forma recomendada para distribuir.
+    ///   - endereco completo com esquema (`https://...` ou `file:///...`),
+    ///     usado como esta.
+    pub index_url: String,
+    /// A MESMA pagina hospedada no site, usada so como rede de seguranca quando
+    /// o arquivo local nao existe. Opcional.
+    pub index_url_remoto: Option<String>,
     pub preferred_patch_server: Option<String>, // Name of the patch server to use in priority
     pub patch_servers: Vec<PatchServerInfo>,
 }
@@ -80,7 +90,74 @@ pub fn retrieve_patcher_configuration(
     let config_file_path =
         config_file_path.unwrap_or_else(|| PathBuf::from(patcher_name).with_extension("yml"));
     // Read the YAML content of the file as an instance of `PatcherConfiguration`.
-    parse_configuration(config_file_path)
+    let mut config = parse_configuration(config_file_path)?;
+    config.web.index_url = resolver_index_url(
+        &config.web.index_url,
+        config.web.index_url_remoto.as_deref(),
+    )?;
+    Ok(config)
+}
+
+/// Transforma o `index_url` da configuracao num endereco que funcione na maquina
+/// de quem esta rodando.
+///
+/// 🚨 POR QUE ISTO EXISTE, e por que nao pode ser removido:
+/// o yml distribuido trazia um caminho ABSOLUTO da maquina de desenvolvimento -
+/// `file:///E:/DEV%20Ragnarok/ClienteRagnaLinK/patcher/index.html`. Na maquina de
+/// qualquer outra pessoa esse caminho nao existe, o MSHTML nao carrega pagina
+/// nenhuma e - como a janela roda SEM barra de titulo - o jogador ve um
+/// retangulo vazio e conclui que o programa "nao abriu". Aconteceu num teste
+/// real, na casa de um amigo, e do lado dele nao havia como descobrir a causa.
+///
+/// Agora o yml traz um caminho RELATIVO e ele e resolvido a partir da pasta do
+/// EXECUTAVEL. O cliente passa a funcionar instalado em qualquer lugar, sem
+/// ninguem editar arquivo de configuracao.
+///
+/// Valor com esquema (`https://`, `file://`) continua respeitado como esta, pra
+/// nao quebrar quem aponta de proposito pra pagina hospedada no site.
+fn resolver_index_url(bruto: &str, remoto: Option<&str>) -> Result<String> {
+    if bruto.contains("://") {
+        return Ok(bruto.to_owned());
+    }
+
+    let base = env::current_exe()?
+        .parent()
+        .context("Could not determine the patcher's own directory")?
+        .to_path_buf();
+    // Barra invertida do Windows vira barra normal: assim tanto
+    // `patcher\index.html` quanto `patcher/index.html` funcionam no yml.
+    let caminho = base.join(bruto.replace('\\', "/"));
+
+    if !caminho.is_file() {
+        // Interface local faltando. Abrir uma janela em branco e o pior desfecho
+        // possivel: nao ha mensagem, nao ha barra de titulo, nao ha o que
+        // clicar. Se houver copia hospedada configurada, usa ela e o jogador
+        // sequer percebe.
+        if let Some(r) = remoto {
+            log::error!(
+                "UI file not found at '{}'; falling back to '{}'",
+                caminho.display(),
+                r
+            );
+            return Ok(r.to_owned());
+        }
+        log::error!(
+            "UI file not found at '{}' and no 'index_url_remoto' configured; \
+             the window will come up blank",
+            caminho.display()
+        );
+    }
+
+    // Url::from_file_path cuida do que da errado quando se monta o endereco a
+    // mao: espaco, acento e a barra do Windows. O caminho da instalacao pode
+    // perfeitamente ter os tres.
+    match Url::from_file_path(&caminho) {
+        Ok(u) => Ok(u.to_string()),
+        Err(_) => Err(anyhow::anyhow!(
+            "Invalid UI path: '{}'",
+            caminho.display()
+        )),
+    }
 }
 
 fn parse_configuration(config_file_path: impl AsRef<Path>) -> Result<PatcherConfiguration> {

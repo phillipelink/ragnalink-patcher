@@ -1,0 +1,58 @@
+[package]
+name = "rse-protocol"
+version = "0.1.0"
+edition = "2018"
+rust-version = "1.68.2"
+description = "RagnaShield Engine — protocolo compartilhado (ticket, canal AEAD, versionamento)"
+publish = false
+
+# ---------------------------------------------------------------------------
+#  REGRA DESTE CRATE, e ela nao e negociavel:
+#  nada de I/O, nada de Windows API, nada de tokio. Este crate e o unico ponto
+#  em comum entre o launcher, o Loader e a DLL - e e por ele nao encostar no
+#  sistema operacional que da pra testar 100% dele em CI, em qualquer maquina.
+#
+#  Se um dia alguem sentir vontade de colocar um `std::fs` ou um `reqwest` aqui
+#  dentro: e sinal de que a funcao pertence a OUTRO crate. Passe os bytes por
+#  parametro.
+# ---------------------------------------------------------------------------
+
+[lib]
+name = "rse_protocol"
+crate-type = ["rlib"]
+
+# NAO existe ABI em C aqui, e e uma escolha: expor ponteiro cru exigiria
+# `unsafe`, e este crate mantem `#![forbid(unsafe_code)]` - garantia que vale
+# mais do que a conveniencia. Se a Fase 3 decidir ligar Rust no login-server em
+# vez de reimplementar em C++, isso vira um crate separado (`rse/capi/`) que
+# depende deste e concentra todo o `unsafe` num arquivo pequeno e revisavel.
+
+[features]
+default = ["os-rng"]
+# Fonte de aleatoriedade do sistema. Desligue em ambiente sem SO (ou se preferir
+# injetar a entropia por conta propria via `RandomSource`).
+os-rng = ["getrandom"]
+
+[dependencies]
+# Todas com MSRV <= 1.68.2, que e a toolchain travada do projeto (ver
+# rust-toolchain.toml e docs/ARCHITECTURE.md secao 1.9). Verificado de verdade:
+# `cargo +1.68.2 test` passa nos 51 testes.
+aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc"] }
+hmac    = { version = "0.12", default-features = false }
+sha2    = { version = "0.10", default-features = false }
+hkdf    = { version = "0.12", default-features = false }
+subtle  = { version = "2.4", default-features = false }
+getrandom = { version = "0.2", optional = true }
+
+# 🚨 TETO SUPERIOR DE PROPOSITO, e nao por manha.
+#
+# `zeroize` 1.9.0 passou a usar a edicao 2024 do Rust. O cargo da 1.68.2 nem
+# consegue LER o manifesto dela - falha antes de compilar, com uma mensagem
+# sobre "edition key" que nao parece ter nada a ver com o RSE. Sem este teto, o
+# resolvedor pega a mais nova e o projeto para de compilar do nada, num dia em
+# que ninguem mexeu em nada.
+#
+# Quando a Fase 1.5 do ROADMAP for aprovada e o rust-toolchain.toml sair, este
+# teto pode sair junto - e so voltar para `version = "1.5"`.
+zeroize = { version = ">=1.5, <1.9", default-features = false }
+
