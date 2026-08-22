@@ -115,6 +115,23 @@ fn parse_args() -> Args {
 //
 //  Limitacoes assumidas: HTTP/1.1 simples, sem TLS, sem redirecionamento, sem
 //  chunked. E o suficiente para falar com o container ao lado.
+//
+//  Sobre o `X-Forwarded-Proto: https` que vai em todo pedido:
+//
+//  O Portal roda atras do nginx, que termina o TLS e repassa em HTTP puro para
+//  o Kestrel na 8081. O `Startup` liga `app.UseHttpsRedirection()`, entao o
+//  ASP.NET so considera o pedido seguro se o proxy disser que era HTTPS na
+//  ponta — e e esse header que diz. Como esta ferramenta bate direto na 8081,
+//  pulando o nginx, sem o header ela leva um `307 Temporary Redirect` para
+//  `https://<host>/...` (repare: sem a porta, ou seja, para a 443), e o corpo
+//  volta vazio. O header reproduz o que o nginx faria.
+//
+//  Nao e uma gambiarra de teste: e exatamente o mesmo header que o proxy real
+//  poe. O Loader da Fase 4 vai falar HTTPS pelo nome publico e nao precisa
+//  disto.
+
+/// Header que finge ser o nginx. Ver o comentario do bloco acima.
+const CABECALHO_PROXY: &str = "X-Forwarded-Proto: https";
 
 fn http_post(url: &str, caminho: &str, corpo: &str) -> Result<String, String> {
     let (host_porta, host_cabecalho) = destino(url)?;
@@ -126,10 +143,11 @@ fn http_post(url: &str, caminho: &str, corpo: &str) -> Result<String, String> {
         .map_err(|e| e.to_string())?;
 
     let pedido = format!(
-        "POST {} HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\n\
+        "POST {} HTTP/1.1\r\nHost: {}\r\n{}\r\nContent-Type: application/json\r\n\
          Content-Length: {}\r\nConnection: close\r\n\r\n{}",
         caminho,
         host_cabecalho,
+        CABECALHO_PROXY,
         corpo.len(),
         corpo
     );
@@ -139,21 +157,7 @@ fn http_post(url: &str, caminho: &str, corpo: &str) -> Result<String, String> {
     fluxo.read_to_end(&mut bruto).map_err(|e| e.to_string())?;
     let texto = String::from_utf8_lossy(&bruto).to_string();
 
-    let (cabecalho, corpo_resp) = texto
-        .split_once("\r\n\r\n")
-        .ok_or_else(|| "resposta HTTP sem corpo".to_string())?;
-
-    let status: u16 = cabecalho
-        .lines()
-        .next()
-        .and_then(|l| l.split_whitespace().nth(1))
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
-
-    if !(200..300).contains(&status) {
-        return Err(format!("HTTP {} — {}", status, corpo_resp.trim()));
-    }
-    Ok(corpo_resp.to_string())
+    conferir_resposta(&texto)
 }
 
 fn http_get(url: &str, caminho: &str) -> Result<String, String> {
@@ -165,8 +169,8 @@ fn http_get(url: &str, caminho: &str) -> Result<String, String> {
         .map_err(|e| e.to_string())?;
 
     let pedido = format!(
-        "GET {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
-        caminho, host_cabecalho
+        "GET {} HTTP/1.1\r\nHost: {}\r\n{}\r\nConnection: close\r\n\r\n",
+        caminho, host_cabecalho, CABECALHO_PROXY
     );
     fluxo.write_all(pedido.as_bytes()).map_err(|e| e.to_string())?;
 
@@ -174,10 +178,45 @@ fn http_get(url: &str, caminho: &str) -> Result<String, String> {
     fluxo.read_to_end(&mut bruto).map_err(|e| e.to_string())?;
     let texto = String::from_utf8_lossy(&bruto).to_string();
 
-    texto
+    conferir_resposta(&texto)
+}
+
+/// Separa cabecalho de corpo e reprova qualquer status fora do 2xx.
+///
+/// O caso do 3xx ganha mensagem propria porque o corpo vem vazio: sem isso o
+/// erro seria `HTTP 307 — ` e ninguem descobriria o motivo. Mostrar o
+/// `Location` entrega o diagnostico pronto.
+fn conferir_resposta(texto: &str) -> Result<String, String> {
+    let (cabecalho, corpo) = texto
         .split_once("\r\n\r\n")
-        .map(|(_, c)| c.to_string())
-        .ok_or_else(|| "resposta HTTP sem corpo".to_string())
+        .ok_or_else(|| "resposta HTTP sem corpo".to_string())?;
+
+    let status: u16 = cabecalho
+        .lines()
+        .next()
+        .and_then(|l| l.split_whitespace().nth(1))
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+
+    if (300..400).contains(&status) {
+        let destino = cabecalho
+            .lines()
+            .find(|l| l.to_ascii_lowercase().starts_with("location:"))
+            .map(|l| l[9..].trim())
+            .unwrap_or("(sem Location)");
+        return Err(format!(
+            "HTTP {} — o servidor redirecionou para {}.\n         \
+             Isto costuma ser o `UseHttpsRedirection` do ASP.NET: o pedido \
+             chegou como HTTP puro\n         e a aplicacao so aceita HTTPS. \
+             Confira se a --auth aponta para a porta interna certa.",
+            status, destino
+        ));
+    }
+
+    if !(200..300).contains(&status) {
+        return Err(format!("HTTP {} — {}", status, corpo.trim()));
+    }
+    Ok(corpo.to_string())
 }
 
 fn destino(url: &str) -> Result<(String, String), String> {
@@ -432,11 +471,33 @@ fn main() {
                 Ok(n) if n >= 2 => {
                     let id = u16::from_le_bytes([buf[0], buf[1]]);
                     match id {
-                        0x0069 => {
-                            println!("   ok    0x0069 AC_ACCEPT_LOGIN — LOGIN ACEITO ({} bytes)", n);
+                        // Os dois sao AC_ACCEPT_LOGIN; qual chega depende da
+                        // PACKETVER do emulador. O rAthena troca em 20170621:
+                        // antes disso 0x0069, dali em diante 0x0AC4 (o mesmo
+                        // packet, com o token de autenticacao web a mais).
+                        // Reconhecer so um dos dois faz um login ACEITO passar
+                        // por "packet inesperado" - ja aconteceu.
+                        0x0069 | 0x0AC4 => {
+                            let nome = if id == 0x0AC4 { "0x0AC4" } else { "0x0069" };
+                            println!("   ok    {} AC_ACCEPT_LOGIN — LOGIN ACEITO ({} bytes)", nome, n);
+
+                            // O account_id fica no offset 8 nas duas versoes.
+                            // Serve para casar esta saida com a linha
+                            // "Authentication accepted (account: X, id: N)"
+                            // do console do login-server.
+                            if n >= 12 {
+                                let aid = u32::from_le_bytes([buf[8], buf[9], buf[10], buf[11]]);
+                                println!("         account_id={}", aid);
+                            }
+
                             if !a.sem_ticket && ticket.is_some() {
                                 println!("\n   ==> O circuito do servidor esta fechado: o Auth Service");
                                 println!("       emitiu, o login-server aceitou. Falta o Windows.");
+                                println!("\n   ATENCAO: em rse_enforce: log isto NAO prova que o ticket");
+                                println!("   foi validado - o modo 'log' aceita mesmo com ticket ruim.");
+                                println!("   A prova esta no console do login-server:");
+                                println!("     sem nenhuma linha 'RSE:'  -> o ticket passou");
+                                println!("     com 'RSE: ... entrou SEM ticket valido' -> foi recusado");
                             }
                         }
                         0x006a => {
@@ -457,7 +518,17 @@ fn main() {
                                 println!("   Use uma conta que exista para testar o RSE de verdade.");
                             }
                         }
-                        outro => println!("   ---   packet 0x{:04X} inesperado ({} bytes)", outro, n),
+                        // Conta como falha: um packet que esta ferramenta nao
+                        // sabe ler e um resultado DESCONHECIDO, e "nenhuma
+                        // falha" no rodape para um resultado desconhecido e
+                        // pior do que um erro - da confianca que nao existe.
+                        outro => {
+                            println!("   FALHA packet 0x{:04X} nao reconhecido ({} bytes)", outro, n);
+                            println!("         Nao da para dizer se o login passou. Confira o console");
+                            println!("         do login-server e, se for um accept de outra PACKETVER,");
+                            println!("         acrescente o id no match acima.");
+                            falhas += 1;
+                        }
                     }
                 }
                 Ok(n) => {

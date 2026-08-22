@@ -1,6 +1,6 @@
 # RagnaShield Engine — Roadmap
 
-**Versão:** 1.2 — 21/08/2026 (Fases 2 e 3a concluídas)
+**Versão:** 1.7 — 21/08/2026 (Fases 1.5, 2, 3a e 3b concluídas)
 
 ---
 
@@ -16,10 +16,10 @@ gantt
     Fase 2  RSE Protocol                  :done, f2, 2026-08-21, 1d
     section Fundação
     Fase 3a Validacao no login-server     :done, f3a, 2026-08-21, 1d
-    Fase 3b RSE Auth Service              :active, f3b, after f3a, 14d
+    Fase 3b RSE Auth Service              :done, f3b, after f3a, 1d
     section Execução
-    Fase 1.5 Destravar toolchain          :f15, after f3b, 3d
-    Fase 4  RSE Loader + integração       :f4, after f15, 21d
+    Fase 1.5 Destravar toolchain          :done, f15, after f3b, 1d
+    Fase 4  RSE Loader + integração       :active, f4, after f15, 21d
     Fase 5  RSE DLL — integridade         :f5, after f4, 21d
     section Endurecimento
     Fase 6  Detecções avançadas           :f6, after f5, 30d
@@ -52,7 +52,26 @@ inventário de arquivos modificados × intactos.
 
 ---
 
-## Fase 1.5 — Destravar a toolchain 🟡 *não bloqueia mais a Fase 2*
+## Fase 1.5 — Destravar a toolchain ✅ *Passo A concluído em 21/08/2026*
+
+> ✅ **Passo A concluído e validado em 21/08/2026.** O `ntapi` saiu da árvore com um único
+> `cargo update -p tokio@1.8.4 --precise 1.26.0` — **nenhum `Cargo.toml` alterado**, 8 crates
+> movidos, e a toolchain **continua** em 1.68.2. O launcher recompilou em 1m15s e os testes
+> manuais passaram todos: patch completo, janela sem moldura e recortada, minimizar,
+> arrastar, e o jogo abrindo até a tela de login. Detalhes em `docs/FASE_1_5.md`.
+>
+> 🚨 **Pré-requisito que apareceu no caminho, e vale para as Fases 4 e 5.** O build parou em
+> `error: linker link.exe not found`: o workload **"Desenvolvimento para desktop com C++"**
+> do Visual Studio Build Tools não estava instalado. O `rustup` traz o compilador Rust, mas
+> o alvo `*-pc-windows-msvc` linka com o `link.exe` da Microsoft. Instalado agora, junto com
+> `rustup target add i686-pc-windows-msvc` — o Loader e a DLL das Fases 4 e 5 são i686 e
+> precisariam dele de qualquer forma. Era também a causa real do `cl` não reconhecido no
+> teste de vetores do emulador.
+>
+> **Passo B — trocar de compilador — fica para o começo da Fase 4**, quando se souber qual
+> API do Windows o Loader vai usar e, portanto, qual MSRV é mesmo necessária. Medindo:
+> `windows-sys` 0.48 declara MSRV 1.48 e a 0.52 declara 1.56, então dá para escrever o
+> Loader sem destravar. A trava não é um bloqueio absoluto — é um teto.
 
 **Atualização de 21/08/2026 — a Fase 2 foi feita SEM destravar, e funcionou.**
 O `rse-protocol` compila e passa nos 61 testes com a toolchain travada:
@@ -261,7 +280,7 @@ registrar quem entraria sem ticket, sem barrar ninguém.
 
 ---
 
-## Fase 3b — RSE Auth Service 🎯 *próxima*
+## Fase 3b — RSE Auth Service ✅ *concluída em 21/08/2026*
 
 **Por que vem imediatamente depois:** é aqui que o RSE **passa a valer alguma coisa**. Ao
 fim da Fase 3, abrir o Ragexe direto já não conecta — e isso acontece **antes** de existir
@@ -276,14 +295,99 @@ qualquer código de detecção.
 
 **Entregáveis — login-server:** ✅ feitos na Fase 3a.
 
+**O que já está no ar** *(21/08/2026)*
+
+O Auth Service subiu no host do Portal e responde. O `GET /rse/v1/policy` devolvendo
+`{"protocol":1,"enforce":"log","policy_epoch":1,"heartbeat_interval_ms":5000,"ticket_ttl_ms":30000}`
+prova três coisas de uma vez: a configuração chegou ao container, o **auto-teste contra os
+vetores congelados passou na subida** (se divergisse, o site não subia — ver
+`RseConfiguration.AddRseConfiguration`), e a política corrente é a esperada.
+
+```
+PortalRagnarok.Rse/          projeto sem NENHUMA referência ao site — mover para
+                             container próprio depois é refactor pequeno
+PortalRagnarok.App/Controllers/RseController.cs      rota /rse/v1
+PortalRagnarok.App/Configuration/RseConfiguration.cs auto-teste na subida
+rse/tools/smoke/             rse-smoke — prova o circuito sem Loader nem DLL
+```
+
 **Critérios de aceite**
 
 - [x] Vetores da Fase 2 passam **byte a byte** na implementação C++
-- [ ] Ticket emitido pelo Auth Service real → login normal
+- [x] Vetores da Fase 2 passam **byte a byte** na implementação C# (auto-teste na subida)
+- [x] Auth Service no ar e respondendo `/policy` em produção
+- [x] Ticket emitido pelo Auth Service real → login normal **(provado em produção)**
 - [x] Ticket expirado / repetido / assinatura errada → recusa código 3, com log
 - [x] `rse_enforce: log` deixa entrar e registra
 - [ ] Teste de carga: 500 logins/min sem crescimento do cache de replay
 - [x] Chaveiro aceita mais de uma chave (rotação sem derrubar o servidor)
+
+**A prova de ponta a ponta** *(21/08/2026, `ro-core-01`)*
+
+Rodado contra o servidor de produção, em `rse_enforce: log`, com a `K_ticket` real. O que
+importa não é o login ter sido aceito — em modo `log` ele seria aceito de qualquer jeito.
+O que prova é o **contraste** entre as duas execuções:
+
+| | `rse-smoke` | console do login-server |
+|---|---|---|
+| **com** ticket | `0x0AC4 AC_ACCEPT_LOGIN`, `account_id=2000000` | `Authentication accepted` — **nenhuma linha `RSE:`** |
+| **sem** ticket (`--sem-ticket`) | `0x0AC4 AC_ACCEPT_LOGIN` (idêntico) | `RSE: cliente nao enviou ticket` + `RSE: em modo 'log' - entrou SEM ticket valido (INVALID_LENGTH)` |
+
+O bloco de verificação tem três saídas e **todas escrevem no log**; a única que passa em
+silêncio é `rse_verify_ticket() == RSE_OK`. Silêncio na primeira linha e as duas mensagens
+na segunda só é possível se a checagem estiver rodando **e discriminando**.
+
+Com isso, um ticket assinado pelo **C#** foi validado pelo **C++** com a chave de produção:
+HMAC conferiu, TTL dentro da janela, nonce inédito. As três implementações concordam byte a
+byte fora do laboratório.
+
+> Nota de ferramenta: a primeira execução reportou `packet 0x0AC4 inesperado` e mesmo assim
+> imprimiu *"Nenhuma falha"*. O `rse-smoke` só conhecia o `0x0069` — o rAthena troca para
+> `0x0AC4` a partir da PACKETVER 20170621, e a daqui é 20211103. Corrigido: reconhece os
+> dois, mostra o `account_id` para casar com o log, e **packet desconhecido agora conta como
+> falha**. Rodapé verde sobre resultado que a ferramenta não soube ler é pior que erro — dá
+> confiança que não existe.
+
+**Três descobertas na implantação**
+
+**1. 🚨 `rse_verify_init()` apagava a chave recém-lida da configuração.** Bug próprio,
+encontrado antes de chegar em produção, mas por pouco. O rAthena lê a configuração
+**antes** de chamar os `do_init_*` dos módulos:
+
+```
+login_config_read(...)   ->  rse_set_key() enche o chaveiro
+do_init_loginclif()      ->  rse_verify_init() -> memset(g_keys, 0)   <-- apagava tudo
+```
+
+O efeito seria silencioso e apontaria para o lugar errado: em `log`, todo login viraria
+"ticket recusado" e entraria mesmo assim; em `on`, **ninguém entraria** — com o
+`login_conf.txt` aparentemente correto. Dias de depuração perseguindo uma chave que
+estava certa o tempo todo.
+
+*A regra que sai disso:* **chave é configuração, cache de replay é estado de execução — e
+os dois têm ciclos de vida diferentes.** `rse_verify_init()` agora só zera o cache; quem
+quiser mesmo esvaziar o chaveiro chama `rse_clear_keys()`, que é explícito e raro. O
+chaveiro nem precisa ser zerado no arranque: é estático de escopo de arquivo, e o C++ já
+garante que nasce zerado. Há um teste de regressão travando isto (`rse_verify_init
+preserva o chaveiro`), e a suíte foi de 40 para **41 casos**.
+
+*Consequência de projeto:* o login-server agora **declara no arranque** o que carregou —
+`RagnaShield Engine: modo log, 1 chave(s) carregada(s), protocolo 1` — e em `rse_enforce:
+on` com o chaveiro vazio ele **se recusa a subir**. Um servidor de pé recusando 100% dos
+logins é pior do que um servidor que não sobe: o segundo você percebe na hora.
+
+**2. `UseHttpsRedirection` responde 307 a quem bate direto na porta interna.** Não é bug:
+o Portal fica atrás do nginx, que termina o TLS e sinaliza via `X-Forwarded-Proto`. Quem
+chama a porta do container pulando o proxy leva um redirecionamento para a 443 — e com
+`curl -s` o sintoma é **saída vazia**, que não sugere nada. O `rse-smoke` passou a mandar
+o mesmo header que o nginx poria, e a explicar qualquer 3xx em vez de devolver corpo
+vazio. Para conferir à mão:
+
+```bash
+curl -s -H "X-Forwarded-Proto: https" http://127.0.0.1:8081/rse/v1/policy
+```
+
+O Loader da Fase 4 fala HTTPS pelo nome público e não precisa disto.
 
 **Riscos**
 
@@ -412,4 +516,4 @@ Roda em paralelo com a Fase 6.
 
 ---
 
-*Atualizado ao fim da Fase 3a. O login-server já sabe recusar quem não apresenta ticket válido. Próximo passo: **Fase 3b** — o RSE Auth Service, que emite os tickets. Enquanto ele não existir, `rse_enforce` fica em `off` ou `log`.*
+*Atualizado ao fim da Fase 3b. **O circuito do servidor está fechado e provado em produção:** o Auth Service emite, o login-server valida, e quem não apresenta ticket é detectado e registrado. Tudo o que falta para o RSE passar a barrar de verdade é virar `rse_enforce` para `on` — e isso só depois das Fases 4 e 5, quando existir um cliente capaz de apresentar o ticket. Próximo passo: **Fase 1.5**, destravar a toolchain, que agora sim bloqueia a Fase 4.*
