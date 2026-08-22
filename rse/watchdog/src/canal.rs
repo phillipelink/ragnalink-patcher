@@ -27,7 +27,7 @@
 
 use rse_protocol::crypto::{derive_channel_key, Direction, Key};
 use rse_protocol::frame::{Opcode, Opener, Sealer};
-use rse_protocol::version::{RSE_PROTOCOL, SESSION_ID_LEN};
+use rse_protocol::version::{RSE_PROTOCOL, SESSION_ID_LEN, TICKET_LEN};
 
 use crate::mensagens;
 use crate::sys;
@@ -62,6 +62,7 @@ pub fn rodar(
 }
 
 fn apertar_mao(pipe: &sys::Pipe, opener: &mut Opener, sealer: &mut Sealer) -> Result<(), String> {
+
     // 1. esperar o HELLO
     let bruto = pipe
         .ler(PRAZO_HELLO_MS)
@@ -73,7 +74,31 @@ fn apertar_mao(pipe: &sys::Pipe, opener: &mut Opener, sealer: &mut Sealer) -> Re
         return Err(format!("esperava HELLO, veio opcode 0x{:02x}", hello.opcode_raw));
     }
 
-    // 2. responder HELLO_ACK
+    // 2. instalar o netgate ANTES do HELLO_ACK.
+    //
+    // O HELLO traz `[versao(1)][ticket(148)]`. Instalar o hook aqui, antes de
+    // confirmar, garante que ele esteja no lugar quando o Loader retomar o jogo
+    // (o Loader so retoma DEPOIS do HELLO_ACK). Se a primeira chamada de rede do
+    // cliente escapasse antes do hook, o ticket nao iria e o login entraria sem
+    // ele.
+    //
+    // Falha ao instalar NAO impede o HELLO_ACK: durante o rollout (login-server
+    // em 'log') e melhor o jogo abrir sem ticket, com o motivo gritado no log da
+    // DLL, do que travar o jogador. Vira erro fatal quando a exigencia virar 'on'.
+    if hello.payload.len() >= 1 + TICKET_LEN {
+        let ticket = &hello.payload[1..1 + TICKET_LEN];
+        match crate::netgate::instalar(ticket) {
+            Ok(()) => {}
+            Err(e) => sys::log_dll(&format!("FALHA ao instalar o netgate: {} (jogo abre sem ticket)", e)),
+        }
+    } else {
+        sys::log_dll(&format!(
+            "HELLO sem ticket (payload de {} bytes) — netgate nao instalado",
+            hello.payload.len()
+        ));
+    }
+
+    // 3. responder HELLO_ACK
     let payload = mensagens::montar_hello_ack(
         RSE_PROTOCOL,
         sys::pid_atual(),
@@ -88,6 +113,10 @@ fn apertar_mao(pipe: &sys::Pipe, opener: &mut Opener, sealer: &mut Sealer) -> Re
     Ok(())
 }
 
+/// A cada quantos batimentos (5 s cada) pedir um ticket fresco, ate o login
+/// sair. 3 batimentos = 15 s, bem dentro dos 30 s de validade.
+const BATIMENTOS_POR_RENOVACAO: u32 = 3;
+
 fn manter_heartbeat(
     pipe: &sys::Pipe,
     opener: &mut Opener,
@@ -98,8 +127,23 @@ fn manter_heartbeat(
 
     loop {
         sys::dormir_ms(INTERVALO_HEARTBEAT_MS);
-
         contador = contador.wrapping_add(1);
+
+        // --- ticket fresco, ate o login sair -------------------------------
+        //
+        // O ticket do HELLO vale 30 s a partir do clique em JOGAR. Se o jogador
+        // demora no login, ele expira. Pedimos um novo a cada 15 s enquanto o
+        // login nao saiu; depois disso nao ha mais o que proteger nesta conexao.
+        if contador % BATIMENTOS_POR_RENOVACAO == 0 && !crate::netgate::login_ja_saiu() {
+            let req = sealer
+                .seal(Opcode::TicketReq, &[])
+                .map_err(|e| format!("cifrando TICKET_REQ: {}", e))?;
+            if pipe.escrever(&req).is_err() {
+                return Err("Loader nao aceitou o TICKET_REQ".to_string());
+            }
+        }
+
+        // --- heartbeat -----------------------------------------------------
         let payload = mensagens::montar_heartbeat(contador);
         let frame = sealer
             .seal(Opcode::Heartbeat, &payload)
@@ -108,33 +152,40 @@ fn manter_heartbeat(
             return Err(format!("Loader nao aceitou o HEARTBEAT: {}", e));
         }
 
-        // Esperar o ACK. Timeout NAO e erro fatal na hora: pode ser um batimento
-        // perdido isolado. So a sequencia de tres seguidos derruba.
-        match pipe.ler(PRAZO_ACK_MS) {
-            Ok(bruto) => match opener.open(&bruto) {
-                Ok(f) if f.opcode_raw == Opcode::HeartbeatAck.as_u8() => {
-                    perdidos = 0;
-                }
-                Ok(f) if f.opcode_raw == Opcode::Shutdown.as_u8() => {
-                    // Encerramento limpo pedido pelo Loader (jogo fechando, ou
-                    // kill-switch). Nao e falha.
-                    return Ok(());
-                }
-                Ok(f) => {
-                    // Opcode inesperado: registrar e ignorar, como manda o
-                    // protocolo. Nao conta como batimento perdido.
-                    let _ = f;
-                }
-                Err(_) => {
-                    // Frame corrompido no meio do canal cifrado e serio, mas o
-                    // caminho conservador aqui e tratar como batimento perdido e
-                    // deixar o contador decidir.
-                    perdidos += 1;
-                }
-            },
-            Err(_) => {
-                perdidos += 1;
+        // Ler as respostas ate reconhecer o HEARTBEAT_ACK deste ciclo. Um
+        // TICKET_RSP pode chegar no meio; tratamos e continuamos lendo.
+        let mut viu_ack = false;
+        for _ in 0..4 {
+            match pipe.ler(PRAZO_ACK_MS) {
+                Ok(bruto) => match opener.open(&bruto) {
+                    Ok(f) if f.opcode_raw == Opcode::HeartbeatAck.as_u8() => {
+                        viu_ack = true;
+                        break;
+                    }
+                    Ok(f) if f.opcode_raw == Opcode::TicketRsp.as_u8() => {
+                        if let Some(t) = mensagens::ler_ticket_rsp(&f.payload, TICKET_LEN) {
+                            if crate::netgate::atualizar_ticket(t) {
+                                sys::log_dll("ticket renovado");
+                            }
+                        } else {
+                            sys::log_dll("TICKET_RSP sem ticket (Auth Service caiu?) — mantendo o anterior");
+                        }
+                        // Continua lendo: o HEARTBEAT_ACK ainda pode vir.
+                    }
+                    Ok(f) if f.opcode_raw == Opcode::Shutdown.as_u8() => {
+                        return Ok(());
+                    }
+                    Ok(_) => { /* opcode inesperado: ignora, como manda o protocolo */ }
+                    Err(_) => break, // frame corrompido: conta como batimento perdido
+                },
+                Err(_) => break, // timeout
             }
+        }
+
+        if viu_ack {
+            perdidos = 0;
+        } else {
+            perdidos += 1;
         }
 
         if perdidos >= BATIMENTOS_PERDIDOS_ATE_MORRER {

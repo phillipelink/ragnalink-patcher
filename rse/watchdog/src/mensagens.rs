@@ -70,6 +70,45 @@ pub fn ler_heartbeat(p: &[u8]) -> Option<u32> {
     Some(u32::from_le_bytes([p[0], p[1], p[2], p[3]]))
 }
 
+/// Payload do `TICKET_RSP` (Loader -> DLL): a resposta ao pedido de ticket fresco.
+///
+/// ```text
+/// offset  tam  campo
+///      0    1  status (0 = ok, seguem 148 bytes; != 0 = falha, sem ticket)
+///      1  148  ticket, so quando status == 0
+/// ```
+///
+/// # Por que um ticket FRESCO, e não o do HELLO
+///
+/// O ticket vale 30 s (spec §4.2), e é pedido no clique em JOGAR. Se o jogador
+/// demora para digitar a senha, o ticket do arranque expira antes do login. A
+/// DLL então pede um ticket novo pelo canal a cada ~15 s até o login sair, e o
+/// netgate sempre tem um recente na mão. O `send` do hook é síncrono e não pode
+/// esperar uma volta ao servidor — por isso o ticket tem que estar pronto ANTES.
+pub const TICKET_RSP_OK_LEN: usize = 1 + 148;
+
+pub fn montar_ticket_rsp_ok(ticket: &[u8]) -> Vec<u8> {
+    let mut p = Vec::with_capacity(TICKET_RSP_OK_LEN);
+    p.push(0); // status ok
+    p.extend_from_slice(ticket);
+    p
+}
+
+pub fn montar_ticket_rsp_falha() -> [u8; 1] {
+    [1] // status != 0
+}
+
+/// Devolve o ticket se o status for ok e o tamanho bater; senão `None`.
+pub fn ler_ticket_rsp(p: &[u8], ticket_len: usize) -> Option<&[u8]> {
+    if p.is_empty() || p[0] != 0 {
+        return None;
+    }
+    if p.len() < 1 + ticket_len {
+        return None;
+    }
+    Some(&p[1..1 + ticket_len])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -98,5 +137,25 @@ mod tests {
     #[test]
     fn heartbeat_curto_reprova() {
         assert!(ler_heartbeat(&[0u8; 3]).is_none());
+    }
+
+    #[test]
+    fn ticket_rsp_ok_ida_e_volta() {
+        let ticket = [0xABu8; 148];
+        let p = montar_ticket_rsp_ok(&ticket);
+        assert_eq!(p.len(), TICKET_RSP_OK_LEN);
+        assert_eq!(ler_ticket_rsp(&p, 148).unwrap(), &ticket[..]);
+    }
+
+    #[test]
+    fn ticket_rsp_falha_nao_tem_ticket() {
+        assert!(ler_ticket_rsp(&montar_ticket_rsp_falha(), 148).is_none());
+    }
+
+    #[test]
+    fn ticket_rsp_curto_reprova() {
+        let mut p = vec![0u8]; // status ok mas sem ticket
+        p.extend_from_slice(&[0u8; 100]); // curto
+        assert!(ler_ticket_rsp(&p, 148).is_none());
     }
 }

@@ -1,17 +1,20 @@
 //! `rse_watchdog.dll` — a DLL do RagnaShield Engine, injetada no Ragexe.
 //!
-//! # O que ela faz nesta fase (5a)
+//! # O que ela faz (5a + 5b)
 //!
-//! Prova que esta viva e conversando: conecta no pipe do Loader, faz o aperto de
-//! mao cifrado (HELLO / HELLO_ACK) e mantem o heartbeat. Enquanto ela responde,
-//! o Loader sabe que o cliente esta sob vigilancia; quando ela some, o Loader
-//! derruba o cliente, e quando o Loader some, ela derruba a si mesma.
+//! - **5a — canal:** conecta no pipe do Loader, faz o aperto de mao cifrado
+//!   (HELLO / HELLO_ACK) e mantem o heartbeat. Enquanto ela responde, o Loader
+//!   sabe que o cliente esta sob vigilancia; quando ela some, o Loader derruba o
+//!   cliente, e quando o Loader some, ela derruba a si mesma.
+//! - **5b — netgate:** engancha o `send` do Winsock e antepoe o packet `0x0AAA`
+//!   (o ticket, que chega no HELLO) na conexao de login. E esta peca que faz
+//!   `rse_enforce: on` significar alguma coisa — sem ela, abrir o Ragexe direto
+//!   ainda conectava. Ver `netgate.rs`.
 //!
-//! # O que ainda NAO faz (Fases 5b e 5c)
+//! # O que ainda NAO faz (Fase 5c)
 //!
-//! - **netgate**: interceptar o envio de rede e antepor o packet `0x0AAA` com o
-//!   ticket. E o que fecha o circuito de verdade com o login-server. Fase 5b.
-//! - **integridade**: CRC/SHA das GRFs e dos arquivos criticos. Fase 5c.
+//! - **integridade**: CRC/SHA das GRFs e dos arquivos criticos, e o REPORT das
+//!   violacoes para o Loader.
 //!
 //! # Por que o `DllMain` e minimo
 //!
@@ -27,6 +30,8 @@ mod mensagens;
 
 #[cfg(windows)]
 mod canal;
+#[cfg(windows)]
+mod netgate;
 #[cfg(windows)]
 mod sys;
 

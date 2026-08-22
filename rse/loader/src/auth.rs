@@ -1,8 +1,9 @@
 //! Conversa com o RSE Auth Service.
 //!
-//! Nesta fase o Loader faz **um** pedido: troca a credencial de sessao por um
-//! ticket de 30 s. As consultas de politica (kill-switch, a cada 60 s) e o envio
-//! de violacoes entram na Fase 5, quando existir DLL para reportar algo.
+//! O Loader faz dois tipos de pedido: troca a credencial de sessao por um ticket
+//! de 30 s (`/ticket`), e consulta a politica (`/policy`) para o kill-switch —
+//! no arranque, antes de injetar, e a cada 60 s enquanto o jogo roda. O envio de
+//! violacoes (`/report`) entra na Fase 5c, quando a DLL tiver o que reportar.
 //!
 //! # Sobre o TLS
 //!
@@ -60,6 +61,58 @@ struct RespostaErro {
 /// Junta a base com o caminho sem duplicar nem comer a barra.
 fn juntar(base: &str, caminho: &str) -> String {
     format!("{}/{}", base.trim_end_matches('/'), caminho.trim_start_matches('/'))
+}
+
+/// A politica corrente do Auth Service — o que o kill-switch lê.
+#[derive(Deserialize)]
+pub struct Politica {
+    /// Estado de enforcement: `"off"` | `"log"` | `"on"`. `"off"` é o freio de
+    /// emergência: o login-server para de exigir ticket **e** o Loader para de
+    /// injetar. `"log"`/`"on"` mantêm o Loader injetando.
+    #[serde(default = "enforce_log")]
+    pub enforce: String,
+    #[serde(default)]
+    pub policy_epoch: u32,
+}
+
+fn enforce_log() -> String {
+    "log".to_string()
+}
+
+impl Politica {
+    /// O Loader deve recuar (abrir o jogo **sem** injetar) quando a política está
+    /// em `"off"`. É o kill-switch: um `"off"` explícito de um serviço no ar
+    /// desliga o RSE do lado cliente sem redistribuir binário.
+    ///
+    /// Campo ausente ou valor estranho cai no default `"log"` — um JSON malformado
+    /// **nunca** vira kill-switch por acidente. Desligar exige um `"off"` claro.
+    pub fn loader_desligado(&self) -> bool {
+        self.enforce.eq_ignore_ascii_case("off")
+    }
+}
+
+/// Consulta `GET /policy`. Usada pelo kill-switch, no arranque e a cada 60 s.
+pub fn consultar_politica(base_url: &str) -> Result<Politica> {
+    let url = juntar(base_url, "policy");
+
+    let cliente = reqwest::blocking::Client::builder()
+        .timeout(TIMEOUT_HTTP)
+        .build()
+        .context("nao consegui montar o cliente HTTP")?;
+
+    let resposta = cliente
+        .get(&url)
+        .send()
+        .with_context(|| format!("nao consegui falar com o Auth Service em {}", url))?;
+
+    let status = resposta.status();
+    let texto = resposta.text().unwrap_or_default();
+    if !status.is_success() {
+        bail!("o Auth Service recusou a consulta de politica (HTTP {})", status);
+    }
+
+    serde_json::from_str::<Politica>(&texto)
+        .with_context(|| format!("resposta de /policy nao e o JSON esperado: {}", texto))
 }
 
 /// SHA-256 do executavel do jogo, em hexadecimal.
@@ -204,5 +257,37 @@ mod tests {
     fn hash_do_cliente_explica_arquivo_ausente() {
         let e = hash_do_cliente(Path::new("/nao/existe/mesmo.exe")).unwrap_err();
         assert!(format!("{}", e).contains("nao consegui ler"));
+    }
+
+    #[test]
+    fn politica_off_liga_o_kill_switch() {
+        let p: Politica = serde_json::from_str(r#"{"enforce":"off","policy_epoch":3}"#).unwrap();
+        assert!(p.loader_desligado());
+        assert_eq!(p.policy_epoch, 3);
+    }
+
+    #[test]
+    fn politica_off_ignora_caixa() {
+        for j in [r#"{"enforce":"OFF"}"#, r#"{"enforce":"Off"}"#] {
+            let p: Politica = serde_json::from_str(j).unwrap();
+            assert!(p.loader_desligado(), "{} deveria desligar", j);
+        }
+    }
+
+    #[test]
+    fn politica_log_e_on_mantem_a_protecao() {
+        // Inclui um valor estranho de propósito: só "off" exato desliga.
+        for j in [r#"{"enforce":"log"}"#, r#"{"enforce":"on"}"#, r#"{"enforce":"official"}"#] {
+            let p: Politica = serde_json::from_str(j).unwrap();
+            assert!(!p.loader_desligado(), "{} NAO deveria desligar", j);
+        }
+    }
+
+    #[test]
+    fn politica_sem_campo_enforce_nao_desliga() {
+        // Campo ausente cai no default "log" — JSON malformado nunca vira kill-switch.
+        let p: Politica = serde_json::from_str(r#"{"policy_epoch":1}"#).unwrap();
+        assert!(!p.loader_desligado());
+        assert_eq!(p.enforce, "log");
     }
 }

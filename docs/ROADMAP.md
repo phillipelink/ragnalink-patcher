@@ -1,6 +1,6 @@
 # RagnaShield Engine — Roadmap
 
-**Versão:** 2.0 — 22/08/2026 (Fase **5a** PROVADA: DLL injetada e falando com o Loader em produção)
+**Versão:** 2.2 — 22/08/2026 (Fase 5b + TTL fresco provados; telinha do produto)
 
 ---
 
@@ -595,7 +595,63 @@ feio para o jogador). Antes do rollout, compilar o Loader com `#![windows_subsys
 
 ---
 
-## Fase 5b — netgate (fechar o circuito) 🎯 *o próximo valor real*
+## Fase 5b — netgate ✅ *PROVADA em 22/08/2026 — o circuito fechou*
+
+**O circuito inteiro fechou com um cliente REAL.** Um ticket gerado pelo Auth Service,
+carregado por uma DLL injetada, entregue por um hook de rede, validado pelo login-server:
+
+```
+launcher → sessão → Loader (elevado) → /ticket
+   → injeta a rse_watchdog.dll → handshake AES-256-GCM
+   → netgate intercepta o login no WSASend/send
+   → antepõe o 0x0AAA com o ticket → login-server valida → aceita em SILÊNCIO
+```
+
+**A prova (`ro-core-01`, 22/08/2026):**
+
+```
+# rse_watchdog.log
+inline_hook: WSASend desviado (trampolim em 0x1310000)
+envio socket=16bc opcode=0x0064 len=55
+netgate: login detectado, antepondo 0x0AAA
+netgate: 0x0AAA enviado por send, ret=152
+
+# login-server, com rse_enforce: log
+Authentication accepted (account: Phillipe, id: 2000000)     <- SEM linha "RSE:"
+```
+
+Silêncio do RSE no `log` = ticket **válido** (o C++ só loga em falha). Antes, toda entrada
+tinha `RSE: entrou SEM ticket`; agora não tem. Ticket real, aceito.
+
+**O caminho até aqui, e o que cada tropeço ensinou** — três iterações, cada uma diagnosticada
+pelo log da própria DLL em vez de adivinhação:
+
+1. **Hook de IAT instalou mas nunca disparou.** O cliente resolve o Winsock por
+   `GetProcAddress` e guarda o ponteiro — não passa pela tabela de imports. Trocado por
+   **inline hook** (detour de 5 bytes sobre o prólogo hotpatch `mov edi,edi`, verificado antes
+   de tocar para não arriscar crash).
+2. **`send` enganchado por ordinal, não por nome.** O log disse; o hook passou a casar pelos
+   dois. E o cliente usa **`WSASend`**, não `send` — enganchamos os dois.
+3. **O `0x0AAA` saía por WSASend assíncrono e chegava DEPOIS do login.** Trocado por `send`
+   síncrono: quando retorna, os bytes já estão no buffer do socket, garantidamente antes.
+
+**Duas pendências honestas antes de `rse_enforce: on` em produção:**
+
+- ✅ **TTL do ticket — RESOLVIDO e provado (22/08).** A DLL mantém um ticket fresco: a cada
+  15 s, até o login sair, ela pede um novo pelo canal (`TICKET_REQ`), o Loader renova falando
+  com o Auth Service (`TICKET_RSP`), e o netgate sempre tem um ticket com ≤ 15 s de idade.
+  Provado com login deliberadamente lento: o log da DLL mostrou `ticket renovado` antes do
+  login, e o servidor aceitou limpo. Sem mais `EXPIRED` para jogador lento.
+- **Janela de console do Loader.** O `rse_loader.exe` é app de console; compilar com
+  `#![windows_subsystem = "windows"]` antes do rollout.
+
+**Como virar proteção de verdade:** com o TTL resolvido, `rse_enforce: on` no login-server, e
+abrir o Ragexe direto (sem launcher) para de conectar — recusa código 3. É o objetivo do
+projeto desde a primeira mensagem, agora a um ajuste de distância.
+
+---
+
+## Fase 5b — netgate *(escopo original, para referência)*
 
 É aqui que o RSE **passa a impedir** cliente sem launcher. A DLL intercepta o envio de rede
 do Ragexe e antepõe o packet `0x0AAA` com o ticket (que já chega a ela no HELLO). Quando isto

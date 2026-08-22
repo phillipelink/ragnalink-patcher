@@ -58,4 +58,7 @@ winapi = { version = "0.3.6", features = [
     # thread remota, e achar o endereco das funcoes.
     "memoryapi",
     "libloaderapi",
+    # A telinha (splash) do RagnaShield: janela + blit do logo.
+    "winuser",
+    "wingdi",
 ] }

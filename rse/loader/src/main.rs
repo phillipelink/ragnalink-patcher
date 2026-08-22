@@ -38,6 +38,12 @@
 
 #![deny(unsafe_op_in_unsafe_fn)]
 #![cfg_attr(not(windows), allow(dead_code))]
+// Sem console para o jogador. Em release o Loader vira uma aplicacao de janela
+// (a telinha do RagnaShield e a unica UI) - fim do CMD que piscava ao clicar em
+// JOGAR. O diagnostico NAO se perde: o log continua indo para rse_loader.log; so
+// o eco no console (os println!) e que passa a cair no vazio. Em build de debug o
+// console fica, que e onde ele e util no desenvolvimento.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
@@ -46,6 +52,8 @@ mod auth;
 #[cfg(windows)]
 mod injecao;
 mod jogo;
+#[cfg(windows)]
+mod splash;
 mod tubo;
 
 /// Prazo padrao para receber a credencial do launcher.
@@ -244,6 +252,12 @@ fn executar() -> Result<()> {
         rse_protocol::version::RSE_PROTOCOL
     );
 
+    // A telinha do RagnaShield sobe já — enquanto o jogador vê o logo, o Loader
+    // faz sessão, ticket, injeção e handshake por baixo. Ela é fechada logo após
+    // o jogo ser retomado. Roda em thread própria e nunca atrapalha nada.
+    #[cfg(windows)]
+    let tela = splash::Splash::mostrar();
+
     // --- 1. credencial, pelo pipe -----------------------------------------
     //
     // Bloqueia ate o launcher escrever. Se o jogador demorar no UAC, esperamos;
@@ -302,17 +316,38 @@ fn executar() -> Result<()> {
         .context("nao consegui criar o processo do jogo")?;
     log::info!("Ragexe criado suspenso, pid={}", filho.pid);
 
-    // --- 4. injetar a DLL e apertar a mao ANTES de retomar -----------------
+    // --- 4. kill-switch de arranque ----------------------------------------
+    //
+    //  Antes de injetar, o Loader consulta a politica. Se ela manda recuar
+    //  ('off'), abrimos o jogo SEM injetar — o freio de emergencia. RSE quebrado
+    //  em producao vira um ajuste no Auth Service, e os lancamentos novos passam
+    //  a abrir limpos, sem redistribuir cliente. Isto vem ANTES do --exigir-dll
+    //  de proposito: o freio ganha do modo estrito.
+    let rse_desligado = kill_switch_de_arranque(&args.auth);
+
+    // --- 5. injetar a DLL e apertar a mao ANTES de retomar -----------------
     //
     //  A ordem NAO e negociavel: injetar -> esperar HELLO_ACK -> so entao
     //  ResumeThread. Retomar antes do HELLO_ACK abre uma janela em que o jogo ja
     //  roda sem vigilancia - curta, mas suficiente, e e exatamente a que um
     //  atacante procura.
-    let canal = injetar(&args, &filho, &ticket.bytes);
+    let canal = if rse_desligado {
+        Err(anyhow::anyhow!("kill-switch ativo pela politica"))
+    } else {
+        injetar(&args, &filho, &ticket.bytes, &credencial, &client_hash)
+    };
 
-    // --- 5. retomar --------------------------------------------------------
+    // --- 6. retomar --------------------------------------------------------
     match &canal {
         Ok(_) => {}
+        Err(_) if rse_desligado => {
+            // Kill-switch: nao e falha, e decisao. Abre sem protecao e ignora o
+            // --exigir-dll — o freio de emergencia manda mais que o modo estrito.
+            log::warn!(
+                "KILL-SWITCH ATIVO pela politica — abrindo o jogo SEM injetar a DLL \
+                 (--exigir-dll ignorado de proposito)"
+            );
+        }
         Err(e) if args.exigir_dll => {
             // Em modo estrito, injecao falha = jogo NAO abre. O processo suspenso
             // e encerrado ao sair (o Drop do ProcessoFilho fecha os handles; o
@@ -330,6 +365,13 @@ fn executar() -> Result<()> {
     jogo::retomar(&filho).context("nao consegui retomar o processo do jogo")?;
     log::info!("Ragexe retomado");
 
+    // O jogo está de pé — a telinha já cumpriu seu papel. O `fechar` cuida do
+    // respiro (segura o logo por um mínimo e cobre a janela do jogo enquanto ela
+    // pinta, sem flash preto). Ele NÃO segura a proteção: o jogo já foi retomado
+    // e a DLL já está de pé — o que espera ali é só o pixel.
+    #[cfg(windows)]
+    tela.fechar();
+
     // --- 6. vigiar ---------------------------------------------------------
     //
     //  Daqui em diante o Loader nao tem mais nada a fazer senao responder o
@@ -346,6 +388,30 @@ fn executar() -> Result<()> {
     Ok(())
 }
 
+/// Consulta a política no arranque, para o kill-switch. Devolve `true` se o RSE
+/// deve recuar (abrir o jogo sem injetar).
+///
+/// Falha de rede **não** desliga o RSE: o kill-switch é um `"off"` explícito de
+/// um serviço no ar, não uma inferência de queda. E o ticket acabou de vir, então
+/// o serviço está no ar — uma falha aqui é estranha, e a resposta segura é seguir
+/// COM proteção, não desligar tudo por um soluço de rede.
+fn kill_switch_de_arranque(auth_url: &str) -> bool {
+    match auth::consultar_politica(auth_url) {
+        Ok(p) => {
+            log::info!("politica: enforce={}, epoch={}", p.enforce, p.policy_epoch);
+            let off = p.loader_desligado();
+            if off {
+                log::warn!("a politica esta em 'off' — kill-switch do Loader ativo");
+            }
+            off
+        }
+        Err(e) => {
+            log::warn!("nao consegui consultar a politica ({:#}); seguindo COM protecao", e);
+            false
+        }
+    }
+}
+
 /// Resolve o caminho da DLL e faz a injeção. Isolada para o `cfg` não poluir o
 /// fluxo principal.
 #[cfg(windows)]
@@ -353,6 +419,8 @@ fn injetar(
     args: &Args,
     filho: &jogo::ProcessoFilho,
     ticket: &[u8],
+    credencial: &str,
+    client_hash: &str,
 ) -> Result<injecao::CanalDll> {
     let dll = args.dll.clone().unwrap_or_else(|| {
         // Padrao: ao lado do proprio rse_loader.exe.
@@ -364,11 +432,19 @@ fn injetar(
     log::info!("injetando {}", dll.display());
 
     let alvo = injecao::AlvoProcesso(jogo::handle_do_processo(filho));
-    injecao::injetar_e_apertar_mao(alvo, &dll, ticket)
+    // `args.auth`, a credencial e o hash vão junto: é com eles que o Loader
+    // renova o ticket quando a DLL pede (TICKET_REQ).
+    injecao::injetar_e_apertar_mao(alvo, &dll, ticket, &args.auth, credencial, client_hash)
 }
 
 #[cfg(not(windows))]
-fn injetar(_args: &Args, _filho: &jogo::ProcessoFilho, _ticket: &[u8]) -> Result<()> {
+fn injetar(
+    _args: &Args,
+    _filho: &jogo::ProcessoFilho,
+    _ticket: &[u8],
+    _credencial: &str,
+    _client_hash: &str,
+) -> Result<()> {
     bail!("injecao so no Windows")
 }
 

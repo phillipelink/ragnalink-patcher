@@ -41,7 +41,11 @@
 use anyhow::{anyhow, bail, Context, Result};
 use std::path::Path;
 use std::ptr;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 
+use crate::auth;
 use rse_protocol::crypto::{Direction, Key, OsRandom, RandomSource};
 use rse_protocol::dll_config;
 use rse_protocol::frame::{Opcode, Opener, Sealer};
@@ -83,16 +87,25 @@ pub struct CanalDll {
     pipe: PipeDuplex,
     opener: Opener,
     sealer: Sealer,
+    /// Para atender aos `TICKET_REQ` da DLL: cunhar um ticket fresco é falar de
+    /// novo com o Auth Service, e o Loader é quem tem a credencial de sessão.
+    auth_url: String,
+    credencial: String,
+    client_hash: String,
 }
 
 /// Injeta a DLL, faz o handshake, e devolve o canal pronto para o heartbeat.
 ///
 /// `dll_path` e `auth_url` já vêm resolvidos pelo `main`. `alvo` é o handle do
-/// processo suspenso (de `CreateProcessW`).
+/// processo suspenso (de `CreateProcessW`). `credencial`/`client_hash` ficam
+/// guardados para renovar o ticket quando a DLL pedir (TICKET_REQ).
 pub fn injetar_e_apertar_mao(
     alvo: AlvoProcesso,
     dll_path: &Path,
     ticket: &[u8],
+    auth_url: &str,
+    credencial: &str,
+    client_hash: &str,
 ) -> Result<CanalDll> {
     if !dll_path.is_absolute() {
         bail!("caminho da DLL precisa ser absoluto: {}", dll_path.display());
@@ -154,6 +167,9 @@ pub fn injetar_e_apertar_mao(
         pipe,
         opener,
         sealer,
+        auth_url: auth_url.to_string(),
+        credencial: credencial.to_string(),
+        client_hash: client_hash.to_string(),
     })
 }
 
@@ -163,10 +179,53 @@ impl CanalDll {
     /// Bloqueia. Roda depois do `ResumeThread`, na thread principal do Loader —
     /// que a partir daí não tem mais nada a fazer senão vigiar.
     pub fn manter_heartbeat(&mut self) -> Result<()> {
+        // Kill-switch em sessão aberta. Uma thread consulta a política a cada 60 s
+        // e, se ela virar 'off', seta esta flag. A consulta fica FORA do laço de
+        // propósito: o GET pode levar segundos, e o laço não pode ficar sem
+        // responder à DLL — 3 batimentos sem ACK (15 s) e ela se mata. A thread
+        // morre com o processo do Loader quando a vigilância retorna.
+        let desligar = Arc::new(AtomicBool::new(false));
+        {
+            let desligar = desligar.clone();
+            let url = self.auth_url.clone();
+            std::thread::spawn(move || loop {
+                std::thread::sleep(Duration::from_secs(60));
+                match auth::consultar_politica(&url) {
+                    Ok(p) if p.loader_desligado() => {
+                        log::warn!("kill-switch: a politica passou para 'off'");
+                        desligar.store(true, Ordering::SeqCst);
+                        return;
+                    }
+                    Ok(_) => {}
+                    Err(e) => log::debug!("consulta de politica falhou (ignorando): {:#}", e),
+                }
+            });
+        }
+
+        let mut mandou_shutdown = false;
         loop {
+            // Kill-switch ativado no meio da sessão: manda a DLL recuar LIMPO
+            // (SHUTDOWN) e SEGUE servindo o pipe. A DLL, ao ler o SHUTDOWN, encerra
+            // a própria thread sem derrubar o jogo (`canal.rs` devolve Ok nesse
+            // caso) e fecha o pipe — então o `ler` abaixo retorna Err e saímos
+            // normal. Mandar e sair na hora seria uma corrida: o pipe fecharia
+            // antes de a DLL ler o SHUTDOWN, ela trataria como perda do Loader e se
+            // mataria — o oposto do que o kill-switch quer. Por isso: manda UMA vez
+            // e continua servindo até a DLL encerrar por conta própria.
+            if desligar.load(Ordering::SeqCst) && !mandou_shutdown {
+                log::warn!("kill-switch ativo — mandando a DLL recuar (SHUTDOWN); o jogo segue");
+                match self.sealer.seal(Opcode::Shutdown, &[]) {
+                    Ok(f) => {
+                        let _ = self.pipe.escrever(&f);
+                    }
+                    Err(e) => log::warn!("nao consegui cifrar o SHUTDOWN do kill-switch: {}", e),
+                }
+                mandou_shutdown = true;
+            }
+
             let bruto = match self.pipe.ler() {
                 Ok(b) => b,
-                // Pipe fechado = jogo terminou. Fim de expediente normal.
+                // Pipe fechado = jogo terminou (ou a DLL recuou pelo kill-switch).
                 Err(_) => {
                     log::info!("canal com a DLL encerrado (o jogo fechou)");
                     return Ok(());
@@ -190,13 +249,50 @@ impl CanalDll {
                     log::info!("nao consegui responder heartbeat; a DLL sumiu");
                     return Ok(());
                 }
+            } else if frame.opcode_raw == Opcode::TicketReq.as_u8() {
+                // A DLL quer um ticket fresco (o do arranque pode ter expirado).
+                // Cunhamos um novo falando com o Auth Service — o Loader tem a
+                // credencial de sessão. Falha aqui NÃO é fatal: respondemos
+                // TICKET_RSP de falha e a DLL segue com o ticket anterior.
+                let resposta = match auth::pedir_ticket_com_hash(
+                    &self.auth_url,
+                    &self.credencial,
+                    &self.client_hash,
+                ) {
+                    Ok(t) => {
+                        log::info!("ticket renovado para a DLL");
+                        montar_ticket_rsp_ok(&t.bytes)
+                    }
+                    Err(e) => {
+                        log::warn!("nao consegui renovar o ticket: {:#}", e);
+                        vec![1u8] // status != 0, sem ticket
+                    }
+                };
+                let frame = self
+                    .sealer
+                    .seal(Opcode::TicketRsp, &resposta)
+                    .map_err(|e| anyhow!("cifrando TICKET_RSP: {}", e))?;
+                if self.pipe.escrever(&frame).is_err() {
+                    log::info!("nao consegui responder TICKET_REQ; a DLL sumiu");
+                    return Ok(());
+                }
             } else if frame.opcode_raw == Opcode::Shutdown.as_u8() {
                 log::info!("a DLL pediu shutdown");
                 return Ok(());
             }
-            // Fase 5b/5c: TICKET_REQ e REPORT são tratados aqui.
+            // Fase 5c: REPORT é tratado aqui.
         }
     }
+}
+
+/// Payload do TICKET_RSP de sucesso: `[status=0][ticket]`. Espelha
+/// `mensagens::montar_ticket_rsp_ok` da DLL — mantido aqui para o Loader não
+/// depender do crate da DLL.
+fn montar_ticket_rsp_ok(ticket: &[u8]) -> Vec<u8> {
+    let mut p = Vec::with_capacity(1 + ticket.len());
+    p.push(0);
+    p.extend_from_slice(ticket);
+    p
 }
 
 // ===========================================================================
