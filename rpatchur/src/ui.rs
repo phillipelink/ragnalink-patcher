@@ -122,6 +122,7 @@ pub fn build_webview<'a>(
                 "moldar_janela" => handle_moldar_janela(),
                 "minimize" => handle_minimize(),
                 "drag" => handle_drag(),
+                "rse_diag" => handle_rse_diag(webview),
                 request => handle_json_request(webview, request),
             }
             Ok(())
@@ -587,23 +588,38 @@ fn start_game_client(webview: &mut WebView<WebViewUserData>, client_arguments: &
     let exit_on_success = cfg.play.exit_on_success.unwrap_or(true);
 
     let resultado: anyhow::Result<bool> = match cfg.rse.as_ref().filter(|r| r.enabled) {
-        Some(rse_cfg) => match crate::rse::launch_protected(rse_cfg, &cfg.play.path, client_arguments)
-        {
-            // O Loader assumiu: ele e quem cria o processo do jogo.
-            Ok(crate::rse::Saida::Iniciado) => Ok(true),
+        Some(rse_cfg) => {
+            // "Iniciando protecao..." enquanto o UAC e o handover acontecem. E o
+            // unico status que o jogador chega a ver no caminho feliz: no sucesso
+            // o launcher fecha (exit_on_success) e quem mostra o resto e a telinha.
+            avisar_ui(webview, "rseStatus", "iniciando");
+            match crate::rse::launch_protected(rse_cfg, &cfg.play.path, client_arguments) {
+                // O Loader assumiu: ele e quem cria o processo do jogo.
+                Ok(crate::rse::Saida::Iniciado) => Ok(true),
 
-            // Politica `allow`: o RSE falhou e a operacao mandou abrir assim
-            // mesmo. Repare que e AQUI que o jogo abre - o `launch_protected`
-            // nao chegou a criar processo nenhum. Sem esta linha, `allow` teria
-            // o mesmo efeito pratico de `block`, so que silencioso: o jogador
-            // clicaria em JOGAR e nada aconteceria.
-            Ok(crate::rse::Saida::CairParaSemProtecao(motivo)) => {
-                log::warn!("RSE indisponivel, abrindo SEM protecao: {}", motivo);
-                start_executable(&cfg.play.path, client_arguments)
+                // Politica `allow`: o RSE falhou e a operacao mandou abrir assim
+                // mesmo. Repare que e AQUI que o jogo abre - o `launch_protected`
+                // nao chegou a criar processo nenhum. Sem esta linha, `allow` teria
+                // o mesmo efeito pratico de `block`, so que silencioso: o jogador
+                // clicaria em JOGAR e nada aconteceria.
+                Ok(crate::rse::Saida::CairParaSemProtecao(motivo)) => {
+                    log::warn!("RSE indisponivel, abrindo SEM protecao: {}", motivo);
+                    avisar_ui(webview, "rseStatus", "sem_protecao");
+                    start_executable(&cfg.play.path, client_arguments)
+                }
+
+                // Bloqueio deliberado (banimento / build barrado): o jogo NAO
+                // abre, e tentar de novo nao resolve. Aviso proprio, distinto de
+                // erro tecnico, e a janela fica (nao chamamos `exit`).
+                Ok(crate::rse::Saida::Bloqueado(motivo)) => {
+                    log::warn!("RSE bloqueou o acesso: {}", motivo);
+                    avisar_ui(webview, "rseBloqueado", &motivo);
+                    Ok(false)
+                }
+
+                Err(e) => Err(e),
             }
-
-            Err(e) => Err(e),
-        },
+        }
         None => start_executable(&cfg.play.path, client_arguments),
     };
 
@@ -619,9 +635,37 @@ fn start_game_client(webview: &mut WebView<WebViewUserData>, client_arguments: &
         Err(e) => {
             // Com RSE ligado e politica `block`, cair aqui significa que o jogo
             // NAO abriu. Registrar so no log deixaria o jogador clicando em
-            // JOGAR sem nada acontecer, que e o pior desfecho possivel.
+            // JOGAR sem nada acontecer, que e o pior desfecho possivel. Alem do
+            // aviso, geramos o diagnostico (grava rse_diag.txt e devolve um
+            // codigo) e mostramos o erro COM o codigo — o suporte ganha por onde
+            // comecar sem depender do jogador saber achar log.
             log::warn!("Failed to start client: {:#}", e);
-            avisar_ui(webview, "rseErro", &format!("{:#}", e));
+            let msg = match cfg.rse.as_ref() {
+                Some(rse_cfg) => {
+                    let codigo =
+                        crate::rse::gerar_diagnostico(rse_cfg, &cfg.play.path, &format!("{:#}", e));
+                    format!("{} — codigo de suporte {}", e, codigo)
+                }
+                None => format!("{:#}", e),
+            };
+            avisar_ui(webview, "rseErro", &msg);
         }
+    }
+}
+
+/// Gera o relatorio de diagnostico do RSE a pedido (ponto L6, comando `rse_diag`).
+///
+/// Grava `rse_diag.txt` ao lado do jogo e mostra na interface o codigo curto que
+/// o jogador passa ao suporte. Disparado pela UI (Ctrl+Shift+D). Sem bloco `rse:`
+/// no YAML nao ha o que diagnosticar.
+fn handle_rse_diag(webview: &mut WebView<WebViewUserData>) {
+    let cfg = webview.user_data().patcher_config.clone();
+    match cfg.rse.as_ref() {
+        Some(rse_cfg) => {
+            let codigo =
+                crate::rse::gerar_diagnostico(rse_cfg, &cfg.play.path, "pedido manual (rse_diag)");
+            avisar_ui(webview, "rseDiag", &codigo);
+        }
+        None => avisar_ui(webview, "rseDiag", ""),
     }
 }

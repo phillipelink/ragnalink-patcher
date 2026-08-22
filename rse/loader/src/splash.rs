@@ -1,5 +1,14 @@
-//! A telinha do RagnaShield — card branco moderno com o emblema e uma barra de
-//! progresso animada, na inicialização.
+//! A telinha do RagnaShield — card branco com o emblema e uma barra de progresso
+//! animada, na inicialização.
+//!
+//! # Uma nota sobre a arte
+//!
+//! A primeira versão usava um logo desenhado para fundo ESCURO, e ele lavava no
+//! branco — o prateado do "RAGNA" e o círculo de runas sumiam. A solução na
+//! época foi um medalhão escuro atrás do emblema. Com a arte nova, feita para
+//! fundo claro (contorno escuro nas letras, azul com peso), o medalhão deixou de
+//! ser necessário: o emblema vai direto no card. Arte certa vale mais que
+//! contorno inventado em volta da arte errada.
 //!
 //! # Princípio de segurança: a telinha NUNCA atrapalha a proteção
 //!
@@ -15,7 +24,7 @@
 //! compõe a imagem sobre a tela pelo canal alfa por pixel — é o que dá os cantos
 //! arredondados e a sombra suave do card, sem retângulo.
 //!
-//! A **base** (card branco + medalhão + trilha vazia) vem pronta no `.bin`,
+//! A **base** (card branco + emblema + trilha vazia) vem pronta no `.bin`,
 //! premultiplicada. A cada quadro a thread copia a base, desenha o segmento azul
 //! deslizando dentro da trilha, e chama `UpdateLayeredWindow` de novo. Não é gif:
 //! é a janela sendo repintada ~50×/s enquanto o Loader trabalha por baixo.
@@ -43,21 +52,21 @@ use winapi::um::winuser::{
 };
 
 /// A base do card, BGRA premultiplicada top-down, gerada no build a partir do
-/// PNG do logo. Card branco arredondado + sombra + medalhão + trilha VAZIA.
+/// PNG do logo. Card branco arredondado + sombra + emblema + trilha VAZIA.
 static BASE_BGRA: &[u8] = include_bytes!("splash_bgra.bin");
 
 // Dimensões da janela (= card + margem da sombra). Têm que bater com o `.bin`.
-const LARGURA: i32 = 352;
-const ALTURA: i32 = 371;
+const LARGURA: i32 = 432;
+const ALTURA: i32 = 433;
 
 // A trilha da barra, em coordenadas da JANELA — batem com o que o build desenhou.
-const TRACK_X0: usize = 70;
-const TRACK_X1: usize = 282;
-const TRACK_Y: usize = 320;
+const TRACK_X0: usize = 84;
+const TRACK_X1: usize = 348;
+const TRACK_Y: usize = 365;
 const TRACK_H: usize = 5;
 
 // O segmento azul que desliza.
-const SEG_W: f32 = 66.0; // largura do segmento
+const SEG_W: f32 = 81.0; // largura do segmento
 const FADE: f32 = 10.0; // suavização das pontas (efeito "cometa")
 const AZUL_B: f32 = 235.0; // cor do segmento em BGR (RGB 51,130,235)
 const AZUL_G: f32 = 130.0;
@@ -114,7 +123,29 @@ impl Splash {
     /// Antes de fechar, garante o "respiro" do card — mas sem NUNCA segurar a
     /// proteção: quando isto roda, o jogo já foi retomado e a DLL já está de pé.
     /// O que espera aqui é só o pixel na tela.
-    pub fn fechar(mut self) {
+    pub fn fechar(self) {
+        self.encerrar(true);
+    }
+
+    /// Fecha a telinha **na hora**, sem respiro.
+    ///
+    /// Para os caminhos em que o jogo NÃO vai abrir — limite de clientes
+    /// atingido, por exemplo. Aí a telinha não tem o que cobrir, e pior: ela é
+    /// `TOPMOST`, então ficaria por cima da caixa de aviso e o jogador veria um
+    /// logo bonito escondendo justamente a mensagem que explica o que houve.
+    /// Segurar o card por 3 s aqui seria fazer o jogador esperar para só então
+    /// ler que não vai jogar.
+    pub fn fechar_agora(self) {
+        self.encerrar(false);
+    }
+
+    fn encerrar(mut self, com_respiro: bool) {
+        self.derrubar(com_respiro);
+    }
+
+    /// O fechamento de verdade. Separado de `encerrar` para o `Drop` poder usar
+    /// sem consumir `self`.
+    fn derrubar(&mut self, com_respiro: bool) {
         let h = self.hwnd.load(Ordering::SeqCst);
 
         // Se a janela nunca subiu (falhou ao criar), não há o que esperar nem
@@ -131,16 +162,38 @@ impl Splash {
         //    máquina rápida (a barra rodando dá a sensação de "processando").
         //  - RESPIRO_APOS_RETOMAR cobre o cliente ainda pintando a própria janela,
         //    evitando um flash preto quando o pipeline foi lento e já passou do piso.
-        let passado = self.mostrado_em.elapsed();
-        let falta_total = DURACAO_MINIMA_NA_TELA.saturating_sub(passado);
-        let espera = falta_total.max(RESPIRO_APOS_RETOMAR);
-        std::thread::sleep(espera);
+        if com_respiro {
+            let passado = self.mostrado_em.elapsed();
+            let falta_total = DURACAO_MINIMA_NA_TELA.saturating_sub(passado);
+            let espera = falta_total.max(RESPIRO_APOS_RETOMAR);
+            std::thread::sleep(espera);
+        }
 
         // SAFETY: h é uma HWND válida criada pela thread da telinha; postar
         // WM_CLOSE é seguro de qualquer thread.
         unsafe { PostMessageW(h as HWND, WM_CLOSE, 0, 0) };
         if let Some(t) = self.thread.take() {
             let _ = t.join();
+        }
+    }
+}
+
+/// Rede de segurança para os caminhos de ERRO.
+///
+/// O `executar()` do Loader sai por `?` em uma dúzia de pontos — Auth Service
+/// fora, sessão expirada, cliente recusado. Em nenhum deles alguém se lembraria
+/// de fechar a telinha, e ela é `TOPMOST`: ficaria por cima da caixa de erro,
+/// escondendo justamente a mensagem que explica o que houve.
+///
+/// Com `Drop`, fechar deixa de depender de lembrar. Sem respiro, porque em
+/// caminho de erro não há jogo para cobrir.
+///
+/// Quando `fechar`/`fechar_agora` foi chamado, `thread` já é `None` e isto não
+/// faz nada — não há fechamento em dobro.
+impl Drop for Splash {
+    fn drop(&mut self) {
+        if self.thread.is_some() {
+            self.derrubar(false);
         }
     }
 }

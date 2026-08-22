@@ -277,6 +277,8 @@ function pararAqui(e) {
 document.onkeydown = function (e) {
   e = e || window.event;
   if (e.ctrlKey && e.shiftKey && e.keyCode === 77) { chamar('manual_patch'); }
+  /* Ctrl+Shift+D: gera o diagnostico do RSE (rse_diag.txt + codigo de suporte). */
+  if (e.ctrlKey && e.shiftKey && e.keyCode === 68) { chamar('rse_diag'); }
 };
 
 function id(x) { return document.getElementById(x); }
@@ -303,7 +305,11 @@ function patchingStatusReady() {
   marcarResposta();
   progresso(100, 'pronto');
   texto('Tudo atualizado. Bom jogo!');
-  detalhes('');
+  /* A linha de detalhes esta vazia neste momento, e e o ultimo lugar que o
+     jogador olha antes de clicar em JOGAR - entao e aqui que a regra de
+     clientes por PC aparece, ANTES de ele esbarrar nela. */
+  prontoParaJogar = true;
+  detalhes(textoLimite());
   liberar(true);
 }
 function patchingStatusError(msg) {
@@ -341,6 +347,63 @@ function patchingStatusPatchApplied(nome) {
    EXISTIR: ele injeta a chamada por eval, e funcao indefinida vira erro de
    script dentro da janela. */
 function notificationInProgress() { texto('Atualização já está em andamento...'); }
+
+/* ==================================================================== */
+/* RagnaShield Engine (RSE) - o launcher chama estas por eval, com guarda */
+/* `typeof` do lado dele. Aqui elas so precisam EXISTIR. Nao renomear.    */
+/* ==================================================================== */
+function rseStatus(fase) {
+  if (fase === 'iniciando') {
+    texto('Iniciando proteção RagnaShield...');
+    detalhes('');
+    liberar(false);
+  } else if (fase === 'sem_protecao') {
+    texto('Abrindo sem proteção (serviço indisponível).');
+  }
+}
+function rseErro(msg) {
+  progresso(100, 'erro');
+  texto('Proteção falhou: ' + msg);
+  detalhes('Tente de novo. Se persistir, envie o código ao suporte (Ctrl+Shift+D gera outro).');
+  liberar(true);   /* deixa tentar de novo: pode ser so o Auth Service instavel */
+}
+function rseBloqueado(msg) {
+  progresso(100, 'erro');
+  texto('Acesso bloqueado: ' + msg);
+  detalhes('Fale com o suporte se achar que é engano.');
+  liberar(false);  /* banimento nao se resolve tentando de novo */
+}
+/* ---- limite de clientes por computador ------------------------------------
+   O numero NAO fica escrito aqui de proposito: ele vem do /rse/v1/policy, que e
+   a mesma fonte que o Loader obedece. Assim mudar o limite no servidor muda o
+   aviso junto, e nunca existe uma tela dizendo "maximo 2" enquanto a regra real
+   ja e outra - texto desencontrado da regra e pior do que texto nenhum, porque
+   o jogador confia nele e abre chamado.
+   Se a consulta falhar (site fora, sem rede), RSE_MAX fica 0 e a linha some sem
+   barulho, igual ao resto do conteudo ao vivo. */
+var RSE_MAX = 0;
+var prontoParaJogar = false;
+
+function textoLimite() {
+  if (!RSE_MAX || RSE_MAX <= 0) { return ''; }
+  return 'M&aacute;ximo de <b>' + RSE_MAX + '</b> cliente' +
+         (RSE_MAX === 1 ? '' : 's') + ' por computador.';
+}
+
+function pintarPolitica(d) {
+  if (!d || typeof d.max_clients !== 'number') { return; }
+  RSE_MAX = d.max_clients;
+  /* Se a atualizacao ja terminou antes da resposta chegar, pinta agora. */
+  if (prontoParaJogar) { detalhes(textoLimite()); }
+}
+
+function rseDiag(codigo) {
+  if (codigo) {
+    detalhes('Código de suporte: <b>' + codigo + '</b> — detalhes em rse_diag.txt (pasta do jogo).');
+  } else {
+    detalhes('RSE não está ativo neste launcher.');
+  }
+}
 
 /* ==================================================================== */
 /* conteudo ao vivo do site (opcional - se falhar, some sem barulho)     */
@@ -516,6 +579,9 @@ chamar('start_update');
 buscar(SITE + '/api/status', pintarStatus);
 buscar(SITE + '/api/raca-da-vez', pintarRdv);
 buscar(SITE + '/api/noticias', pintarNoticia);
+/* Uma vez so: o limite nao muda no meio da sessao do launcher, e quem obedece a
+   politica de verdade e o Loader, que a consulta no proprio arranque. */
+buscar(SITE + '/rse/v1/policy', pintarPolitica);
 </script>
 </body>
 </html>

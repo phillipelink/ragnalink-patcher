@@ -1,0 +1,22 @@
+[package]
+name = "rse-manifest"
+version = "0.1.0"
+edition = "2018"
+rust-version = "1.68.2"
+description = "RagnaShield Engine — gera o manifesto de integridade do cliente"
+publish = false
+
+# Roda na maquina de quem PUBLICA o cliente (voce), nao na do jogador. Le os
+# arquivos criticos e escreve o rse_manifest.txt que a DLL confere.
+#
+#   cargo run -p rse-manifest -- "D:\DEV Ragnarok\ClienteRagnaLinK"
+#
+# Sem dependencia de terceiros, pela mesma razao do rse-smoke: o que ele faz cabe
+# em std + o sha256 do proprio protocolo.
+
+[[bin]]
+name = "rse-manifest"
+path = "src/main.rs"
+
+[dependencies]
+rse-protocol = { path = "../../protocol" }

@@ -279,8 +279,35 @@ impl CanalDll {
             } else if frame.opcode_raw == Opcode::Shutdown.as_u8() {
                 log::info!("a DLL pediu shutdown");
                 return Ok(());
+            } else if frame.opcode_raw == Opcode::Report.as_u8() {
+                // Fase 5c: a DLL reportou violação(ões). Repassamos ao Auth
+                // Service e devolvemos a ação (REPORT_ACK). Em modo report a ação
+                // vem "report" e ninguém é morto — é telemetria. Agir sobre
+                // "kill" fica para o 5c-2, quando houver mismatch real de manifesto.
+                let violacoes = parse_report(&frame.payload);
+                let acao = match auth::reportar(&self.auth_url, &self.credencial, &violacoes) {
+                    Ok(a) => {
+                        log::info!(
+                            "{} violacao(oes) reportada(s); Auth Service respondeu acao={}",
+                            violacoes.len(),
+                            a
+                        );
+                        a
+                    }
+                    Err(e) => {
+                        log::warn!("nao consegui reportar ao Auth Service: {:#}", e);
+                        "report".to_string()
+                    }
+                };
+                let ack = self
+                    .sealer
+                    .seal(Opcode::ReportAck, acao.as_bytes())
+                    .map_err(|e| anyhow!("cifrando REPORT_ACK: {}", e))?;
+                if self.pipe.escrever(&ack).is_err() {
+                    log::info!("nao consegui responder REPORT_ACK; a DLL sumiu");
+                    return Ok(());
+                }
             }
-            // Fase 5c: REPORT é tratado aqui.
         }
     }
 }
@@ -293,6 +320,54 @@ fn montar_ticket_rsp_ok(ticket: &[u8]) -> Vec<u8> {
     p.push(0);
     p.extend_from_slice(ticket);
     p
+}
+
+/// Quebra o payload do REPORT (texto `code|severity|detail`, uma violação por
+/// linha) nas violações que vão ao `/report`. Linha malformada é ignorada — um
+/// report torto não pode derrubar a vigilância.
+fn parse_report(payload: &[u8]) -> Vec<auth::Violacao> {
+    String::from_utf8_lossy(payload)
+        .lines()
+        .filter_map(|linha| {
+            let mut it = linha.splitn(3, '|');
+            let code = it.next()?.trim().parse::<u32>().ok()?;
+            let severity = it.next().unwrap_or("").trim().to_string();
+            let detail = it.next().unwrap_or("").trim().to_string();
+            Some(auth::Violacao {
+                code,
+                severity,
+                detail,
+            })
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod testes_report {
+    use super::*;
+
+    #[test]
+    fn parse_report_le_uma_violacao() {
+        let v = parse_report(b"6001|info|exe sha=abcd size=123");
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].code, 6001);
+        assert_eq!(v[0].severity, "info");
+        assert_eq!(v[0].detail, "exe sha=abcd size=123");
+    }
+
+    #[test]
+    fn parse_report_ignora_linha_torta_e_le_o_resto() {
+        // primeira linha sem code numérico -> descartada; a segunda vale.
+        let v = parse_report(b"lixo sem pipe\n1001|critica|grf");
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].code, 1001);
+        assert_eq!(v[0].detail, "grf");
+    }
+
+    #[test]
+    fn parse_report_vazio_da_lista_vazia() {
+        assert!(parse_report(b"").is_empty());
+    }
 }
 
 // ===========================================================================

@@ -31,6 +31,10 @@ mod mensagens;
 #[cfg(windows)]
 mod canal;
 #[cfg(windows)]
+mod deteccoes;
+#[cfg(windows)]
+mod integridade;
+#[cfg(windows)]
 mod netgate;
 #[cfg(windows)]
 mod sys;

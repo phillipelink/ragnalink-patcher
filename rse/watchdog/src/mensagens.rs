@@ -109,6 +109,21 @@ pub fn ler_ticket_rsp(p: &[u8], ticket_len: usize) -> Option<&[u8]> {
     Some(&p[1..1 + ticket_len])
 }
 
+// ---- REPORT / REPORT_ACK (Fase 5c) ----------------------------------------
+//
+// Payload do REPORT: texto UTF-8, uma violação por linha, campos separados por
+// `|`: `code|severity|detail`. Formato simples de propósito — o Loader precisa
+// só quebrar em linhas e repassar ao `/report`, sem parser pesado. `code` é
+// numérico (RSE_SPEC §9); `detail` não contém `\n` nem `|`.
+pub fn montar_report(linhas: &[String]) -> Vec<u8> {
+    linhas.join("\n").into_bytes()
+}
+
+/// Lê o REPORT_ACK: a ação que o servidor decidiu, em texto ("report"/"kill"/…).
+pub fn ler_report_ack(p: &[u8]) -> String {
+    String::from_utf8_lossy(p).trim().to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

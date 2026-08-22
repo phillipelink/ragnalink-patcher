@@ -42,4 +42,6 @@ winapi = { version = "0.3.6", features = [
     "minwindef",
     "winsock2",
     "ws2def",
+    # Fase 6: IsDebuggerPresent / CheckRemoteDebuggerPresent.
+    "debugapi",
 ] }

@@ -206,6 +206,20 @@ mod win {
         if ok == 0 {
             // SAFETY: leitura do ultimo erro da thread corrente.
             let erro = unsafe { GetLastError() };
+
+            // 740 = ERROR_ELEVATION_REQUIRED. Significa que o manifesto do
+            // executavel do jogo pede `requireAdministrator` e o Loader NAO esta
+            // elevado. Merece nome proprio: e exatamente o que acontece com quem
+            // tem o cliente antigo depois de o launcher parar de elevar, e o
+            // numero 740 sozinho nao diz nada a ninguem.
+            const ERROR_ELEVATION_REQUIRED: u32 = 740;
+            if erro == ERROR_ELEVATION_REQUIRED {
+                bail!(
+                    "CLIENTE_DESATUALIZADO: o executavel do jogo ainda exige \
+                     administrador (erro 740). Atualize pelo launcher."
+                );
+            }
+
             bail!(
                 "CreateProcessW falhou (erro {}) para {} na pasta {}",
                 erro,

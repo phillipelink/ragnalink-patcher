@@ -96,7 +96,94 @@ Confira no jogo se a mudança apareceu. Só então publique.
 Para repetir um teste, apague o `RagnaLinK.dat` (o cache do último índice aplicado) —
 ou chame `reset_cache` pela interface.
 
-## Passo 5 — Publicar
+## Passo 5 — RagnaShield: manifesto e lista (ANTES de publicar)
+
+> 🚨 **Pule este passo e você tranca jogador do lado de fora.** Não é aviso de estilo: com
+> `rse_enforce: on`, quem não recebe ticket não loga, e o ticket depende do manifesto bater
+> com a lista do servidor.
+
+### Por que quase todo patch precisa disto
+
+O RagnaShield confere a integridade do cliente contra o `rse_manifest.txt`, e as GRFs são
+conferidas por **cabeçalho + tabela de arquivos**. Entrar com um patch numa GRF **reescreve
+essa tabela** — então o hash muda. Na prática:
+
+| O patch mexe em… | Precisa refazer o manifesto? |
+|---|---|
+| conteúdo dentro de uma GRF (`use_grf_merging: true`) | **sim** |
+| `.exe` do jogo, do launcher ou do opensetup | **sim** |
+| arquivo solto que não é `.exe` (System\, DATA.INI, tradução solta) | não |
+
+### A ordem, e por que ela é essa
+
+```
+1. aplica o patch numa copia de referencia do cliente   (o Passo 4 ja faz isto)
+2. gera o manifesto A PARTIR dessa copia ja atualizada
+3. empacota o manifesto como um .thor de pasta (indice seguinte)
+4. poe o hash novo na lista do SERVIDOR, mantendo o antigo
+5. SO ENTAO publica os dois .thor
+```
+
+**O servidor vem antes do patch.** Se você publicar primeiro, quem atualizar na frente terá um
+manifesto que o servidor ainda não conhece — e é recusado. **E o hash antigo fica na lista**
+durante a transição, senão quem ainda *não* atualizou é que é recusado. Com os dois na lista,
+as duas versões convivem.
+
+### Passo a passo
+
+```powershell
+# 2. gerar o manifesto a partir da copia JA atualizada (nao do cliente de dev)
+cd "D:\DEV Ragnarok\ragnalink-patcher"
+cargo run --locked -p rse-manifest -- "<pasta da copia atualizada>"
+
+# o hash que vai para a lista e o SHA-256 do arquivo gerado:
+Get-FileHash "<pasta da copia atualizada>\rse_manifest.txt" -Algorithm SHA256
+```
+
+```yaml
+# 3. patch.yml do manifesto — arquivo SOLTO, entao merging desligado
+use_grf_merging: false
+include_checksums: true
+entries:
+  - relative_path: rse_manifest.txt
+```
+
+```bash
+# 4. no VPS, /opt/ragnalink/.env — hash NOVO primeiro, ANTIGO depois, sem espaco
+RSE_MANIFESTOS_ACEITOS=<hash-novo>,<hash-antigo>
+
+docker compose up -d ragnalink
+docker logs ragnalink 2>&1 | grep -i manifesto     # espera "2 manifesto(s) aceito(s)"
+```
+
+Depois que todo mundo atualizou (dias, não horas), tire o hash antigo da lista.
+
+### Se esquecer, como é o sintoma
+
+O jogador clica em JOGAR e recebe uma caixa dizendo *"Os arquivos do seu cliente estão
+diferentes dos publicados pelo servidor"*. O jogo não abre. No servidor:
+
+```bash
+docker logs ragnalink 2>&1 | grep CLIENT_HASH_UNKNOWN
+```
+
+**Conserto:** acrescente o hash que estiver faltando na lista e suba o container. Para
+descobrir qual é, deixe a lista vazia por um minuto e olhe o log — ele registra o
+`client_hash` de toda emissão:
+
+```bash
+docker logs ragnalink 2>&1 | grep "ticket emitido"
+```
+
+### Duas coisas que ajudam
+
+- **A saída do `rse-manifest` é determinística** (lista ordenada, sem data). Rodar duas vezes
+  no mesmo cliente dá o arquivo byte a byte idêntico. Se o hash mudou sem você ter mexido em
+  nada, **algum arquivo mudou de verdade** — vale investigar antes de publicar.
+- **O manifesto não descreve a si mesmo**, então não há circularidade: dá para gerá-lo e
+  empacotá-lo no mesmo ciclo.
+
+## Passo 6 — Publicar
 
 Duas coisas, nessa ordem — **arquivo primeiro, lista depois**. Se inverter, existe uma
 janela de segundos em que o patcher lê a lista e tenta baixar um arquivo que ainda não
@@ -112,7 +199,7 @@ echo "7 ragnalink_007.thor" >> /opt/ragnalink/patch/plist.txt
 
 Vale na hora. Sem push, sem deploy, sem reiniciar container.
 
-## Passo 6 — Conferir
+## Passo 7 — Conferir
 
 ```bash
 curl -s https://ragnalink.com.br/patch/plist.txt
@@ -147,6 +234,10 @@ sequência e termina no mesmo lugar.
 2. patch.yml (include_checksums: true)
 3. mkpatch.exe patch.yml -p <pasta> -o ragnalink_00N.thor
 4. testar por "Patch manual" numa cópia
-5. scp do .thor  ->  depois  echo "N ragnalink_00N.thor" >> plist.txt
-6. conferir tamanho pelo curl
+5. RagnaShield (se mexeu em GRF ou .exe):
+     rse-manifest na cópia atualizada  ->  .thor do rse_manifest.txt (índice N+1)
+     hash novo + antigo no RSE_MANIFESTOS_ACEITOS  ->  subir o container
+     ^^ o SERVIDOR vem ANTES de publicar. Pular isto tranca jogador.
+6. scp dos .thor  ->  depois  echo "N ..." >> plist.txt
+7. conferir tamanho pelo curl
 ```

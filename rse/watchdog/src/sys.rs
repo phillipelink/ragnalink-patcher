@@ -13,7 +13,7 @@ use winapi::shared::minwindef::{DWORD, HMODULE};
 use winapi::um::errhandlingapi::GetLastError;
 use winapi::um::fileapi::{CreateFileW, ReadFile, WriteFile, OPEN_EXISTING};
 use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
-use winapi::um::libloaderapi::GetModuleHandleW;
+use winapi::um::libloaderapi::{GetModuleFileNameW, GetModuleHandleW};
 use winapi::um::namedpipeapi::WaitNamedPipeW;
 use winapi::um::processthreadsapi::{GetCurrentProcess, GetCurrentProcessId, GetCurrentThreadId};
 use winapi::um::synchapi::Sleep;
@@ -49,6 +49,21 @@ pub fn base_do_modulo() -> u64 {
     // SAFETY: NULL pede o modulo do proprio processo; sempre existe.
     let h: HMODULE = unsafe { GetModuleHandleW(ptr::null()) };
     h as usize as u64
+}
+
+/// Caminho do executavel do processo hospedeiro (o proprio Ragexe).
+///
+/// `GetModuleFileNameW(NULL)` devolve o caminho do modulo principal lido de
+/// DENTRO do processo — nao um caminho que alguem passou por fora. E o arquivo
+/// que a integridade da Fase 5c confere.
+pub fn caminho_do_exe() -> Option<String> {
+    let mut buf = [0u16; 260]; // MAX_PATH
+    // SAFETY: buffer valido; NULL = modulo principal. `n` = quantos u16 escritos.
+    let n = unsafe { GetModuleFileNameW(ptr::null_mut(), buf.as_mut_ptr(), buf.len() as u32) };
+    if n == 0 || n as usize >= buf.len() {
+        return None; // falhou, ou o caminho nao coube (caso raro): sem report
+    }
+    Some(String::from_utf16_lossy(&buf[..n as usize]))
 }
 
 pub fn dormir_ms(ms: u32) {
@@ -227,6 +242,31 @@ impl Pipe {
 /// Se o prologo NAO for esse, esta funcao **nao toca em nada** e devolve erro com
 /// os bytes que viu. Sem desmontador embutido, mexer num prologo desconhecido
 /// seria justamente o que trava o jogo — entao nao mexemos.
+/// Endereco de um simbolo exportado por um modulo **ja carregado**.
+///
+/// `None` quando o modulo nao esta no processo ou nao exporta o nome. Nao
+/// carrega DLL nenhuma de proposito: se o modulo nao esta ai, a resposta certa e
+/// "nao sei", e nao trazer uma DLL nova para dentro do processo do jogo so para
+/// responder uma pergunta de diagnostico.
+pub fn endereco_de(modulo: &str, func: &str) -> Option<usize> {
+    use winapi::um::libloaderapi::{GetModuleHandleW, GetProcAddress};
+
+    let mod_w = wide(modulo);
+    // SAFETY: mod_w termina em NUL.
+    let h = unsafe { GetModuleHandleW(mod_w.as_ptr()) };
+    if h.is_null() {
+        return None;
+    }
+    let nome = std::ffi::CString::new(func).ok()?;
+    // SAFETY: h valido; nome termina em NUL.
+    let p = unsafe { GetProcAddress(h, nome.as_ptr()) } as usize;
+    if p == 0 {
+        None
+    } else {
+        Some(p)
+    }
+}
+
 pub fn inline_hook(modulo: &str, func: &str, novo: usize) -> Result<usize, String> {
     use winapi::um::libloaderapi::{GetModuleHandleW, GetProcAddress};
     use winapi::um::memoryapi::{VirtualAlloc, VirtualProtect};

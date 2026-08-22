@@ -50,7 +50,11 @@ use std::path::{Path, PathBuf};
 
 mod auth;
 #[cfg(windows)]
+mod bandeja;
+#[cfg(windows)]
 mod injecao;
+#[cfg(windows)]
+mod vagas;
 mod jogo;
 #[cfg(windows)]
 mod splash;
@@ -187,6 +191,13 @@ fn diretorio_do_jogo(a: &Args) -> Result<PathBuf> {
 /// jogador sabe achar e para a qual ele ja tem permissao de escrita.
 struct LogDuplo {
     arquivo: std::sync::Mutex<Option<std::fs::File>>,
+    /// PID do proprio processo, carimbado em cada linha.
+    ///
+    /// Existe por causa do multi-cliente: o jogador que abre 2 ou 3 clientes tem
+    /// 2 ou 3 Loaders escrevendo no MESMO arquivo, e sem o carimbo as linhas se
+    /// misturam sem dono. Com ele, `findstr 41664 rse_loader.log` isola uma
+    /// sessao.
+    pid: u32,
 }
 
 impl log::Log for LogDuplo {
@@ -198,7 +209,7 @@ impl log::Log for LogDuplo {
         if !self.enabled(r.metadata()) {
             return;
         }
-        let linha = format!("[{}] {}", r.level(), r.args());
+        let linha = format!("[{}][{}] {}", r.level(), self.pid, r.args());
         println!("{}", linha);
         if let Ok(mut guarda) = self.arquivo.lock() {
             if let Some(f) = guarda.as_mut() {
@@ -225,11 +236,38 @@ fn iniciar_log(caminho: &Option<PathBuf>, exe: &Path) {
             .join("rse_loader.log")
     });
 
-    let arquivo = std::fs::File::create(&destino).ok();
+    // 🚨 APPEND, e nao `File::create`. Multi-cliente e normal em RO (vending com
+    // 2 ou 3 clientes), e cada JOGAR sobe um Loader proprio — todos escrevendo
+    // NESTE arquivo.
+    //
+    // Com `File::create` o segundo Loader truncava o log do primeiro, e as duas
+    // escritas caiam em offsets independentes: o resultado observado em campo foi
+    // uma linha meio comida no meio do arquivo (`m a DLL encerrado...`). Log
+    // corrompido que PARECE inteiro e pior do que log ausente — e e justamente
+    // este arquivo que o `rse_diag` manda para o suporte.
+    //
+    // Em modo append cada `write` vai para o fim do arquivo (FILE_APPEND_DATA),
+    // entao linha inteira nao se mistura com linha inteira. O `pid` no prefixo
+    // separa as sessoes.
+    //
+    // Rotacao simples pelo tamanho: sem ela o arquivo cresceria para sempre na
+    // pasta de quem joga todo dia. Se dois Loaders rodarem isto ao mesmo tempo, o
+    // pior caso e truncar duas vezes — mesmo resultado.
+    const LIMITE_LOG: u64 = 1_000_000;
+    if std::fs::metadata(&destino).map(|m| m.len() > LIMITE_LOG).unwrap_or(false) {
+        let _ = std::fs::write(&destino, b"");
+    }
+
+    let arquivo = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&destino)
+        .ok();
     let tinha_arquivo = arquivo.is_some();
 
     let logger = Box::new(LogDuplo {
         arquivo: std::sync::Mutex::new(arquivo),
+        pid: std::process::id(),
     });
 
     if log::set_boxed_logger(logger).is_ok() {
@@ -276,10 +314,10 @@ fn executar() -> Result<()> {
     // em uso, permissao), seguimos com zeros em vez de impedir o jogo de abrir -
     // negar acesso por causa de um campo que ninguem ainda usa seria trocar um
     // problema real por um inventado.
-    let client_hash = match auth::hash_do_cliente(&args.exe) {
+    let client_hash = match auth::hash_do_manifesto(&args.exe) {
         Ok(h) => h,
         Err(e) => {
-            log::warn!("nao consegui calcular o hash do cliente ({:#}); seguindo com zeros", e);
+            log::warn!("sem manifesto de integridade ({:#}); seguindo com zeros", e);
             "0".repeat(64)
         }
     };
@@ -293,7 +331,45 @@ fn executar() -> Result<()> {
         ticket.expira_em_ms
     );
 
-    // --- 3. o jogo ---------------------------------------------------------
+    // --- 3. politica: kill-switch e limite de clientes ---------------------
+    //
+    //  Uma consulta so, aqui, ANTES de criar o processo do jogo. Duas decisoes
+    //  saem dela: se o RSE deve recuar (kill-switch) e quantos clientes esta
+    //  maquina pode ter abertos.
+    let politica = politica_de_arranque(&args.auth);
+    let rse_desligado = politica.loader_desligado();
+
+    //  A vaga e reservada antes de criar o jogo de proposito: recusar depois
+    //  significaria criar um processo so para mata-lo, e qualquer tropeco nesse
+    //  caminho deixaria um Ragexe suspenso pendurado — que e justamente o que
+    //  causa o "Cannot init d3d" do SOCORRO.md §3.
+    //
+    //  `_vaga` fica viva ate o fim de `executar`: e a posse do mutex que conta.
+    //  Trocar por `let _ =` a soltaria na hora e o limite viraria enfeite.
+    let _vaga = match vagas::reservar(politica.max_clients) {
+        Ok(v) => {
+            if politica.max_clients > 0 {
+                log::info!("limite de clientes: {}", politica.max_clients);
+            }
+            v
+        }
+        Err(()) => {
+            log::warn!(
+                "limite de {} cliente(s) por computador atingido; nao vou abrir mais um",
+                politica.max_clients
+            );
+            // A telinha sai ANTES do aviso, e sem respiro: ela e TOPMOST, entao
+            // ficaria por cima da caixa e esconderia justamente a mensagem que
+            // explica o que aconteceu. Nao ha jogo para ela cobrir aqui.
+            #[cfg(windows)]
+            tela.fechar_agora();
+            avisar_limite(politica.max_clients);
+            // Saida limpa: nenhum processo foi criado, nada a desfazer.
+            return Ok(());
+        }
+    };
+
+    // --- 4. o jogo ---------------------------------------------------------
     let dir = diretorio_do_jogo(&args)?;
 
     // Estas tres linhas existem para o diagnostico de campo. "O jogo nao abre"
@@ -315,15 +391,6 @@ fn executar() -> Result<()> {
     let filho = jogo::iniciar_suspenso(&args.exe, &dir, &args.jogo_args)
         .context("nao consegui criar o processo do jogo")?;
     log::info!("Ragexe criado suspenso, pid={}", filho.pid);
-
-    // --- 4. kill-switch de arranque ----------------------------------------
-    //
-    //  Antes de injetar, o Loader consulta a politica. Se ela manda recuar
-    //  ('off'), abrimos o jogo SEM injetar — o freio de emergencia. RSE quebrado
-    //  em producao vira um ajuste no Auth Service, e os lancamentos novos passam
-    //  a abrir limpos, sem redistribuir cliente. Isto vem ANTES do --exigir-dll
-    //  de proposito: o freio ganha do modo estrito.
-    let rse_desligado = kill_switch_de_arranque(&args.auth);
 
     // --- 5. injetar a DLL e apertar a mao ANTES de retomar -----------------
     //
@@ -378,39 +445,112 @@ fn executar() -> Result<()> {
     //  heartbeat da DLL ate o jogo fechar. Se a DLL parar de bater, o
     //  `manter_heartbeat` retorna e o Loader sai — e a DLL, do outro lado, se
     //  encerra por conta propria ao perder o Loader.
+    //
+    //  O escudo na bandeja acompanha EXATAMENTE esta janela: sobe aqui, sai no
+    //  fim. Por isso ele so aparece quando ha protecao de verdade — com o
+    //  kill-switch ativo ou injecao falha, `canal` e Err e nenhum icone aparece.
+    //  Icone que aparecesse sem protecao seria pior do que icone nenhum.
     #[cfg(windows)]
     if let Ok(mut c) = canal {
+        // A dica vai por `Shell_NotifyIconW` em UTF-16, então acento aparece
+        // certo — não há motivo para escrever sem, e isto é texto que o jogador lê.
+        let escudo = bandeja::Bandeja::mostrar("RagnaShield Engine — Proteção ativa");
         if let Err(e) = c.manter_heartbeat() {
             log::warn!("vigilancia encerrada: {:#}", e);
         }
+        escudo.fechar();
     }
 
     Ok(())
 }
 
-/// Consulta a política no arranque, para o kill-switch. Devolve `true` se o RSE
-/// deve recuar (abrir o jogo sem injetar).
+/// Consulta a política no arranque — de onde saem o kill-switch e o limite de
+/// clientes.
 ///
-/// Falha de rede **não** desliga o RSE: o kill-switch é um `"off"` explícito de
-/// um serviço no ar, não uma inferência de queda. E o ticket acabou de vir, então
-/// o serviço está no ar — uma falha aqui é estranha, e a resposta segura é seguir
-/// COM proteção, não desligar tudo por um soluço de rede.
-fn kill_switch_de_arranque(auth_url: &str) -> bool {
+/// Falha de rede **não** desliga o RSE nem tranca ninguém: devolvemos a política
+/// padrão (`log`, sem limite). O kill-switch é um `"off"` explícito de um serviço
+/// no ar, não uma inferência de queda — e o ticket acabou de vir, então o serviço
+/// está no ar. Uma falha aqui é estranha, e a resposta segura é seguir COM
+/// proteção e SEM limite, em vez de desligar tudo ou trancar o jogador por causa
+/// de um soluço de rede.
+fn politica_de_arranque(auth_url: &str) -> auth::Politica {
     match auth::consultar_politica(auth_url) {
         Ok(p) => {
-            log::info!("politica: enforce={}, epoch={}", p.enforce, p.policy_epoch);
-            let off = p.loader_desligado();
-            if off {
+            log::info!(
+                "politica: enforce={}, epoch={}, max_clients={}",
+                p.enforce,
+                p.policy_epoch,
+                p.max_clients
+            );
+            if p.loader_desligado() {
                 log::warn!("a politica esta em 'off' — kill-switch do Loader ativo");
             }
-            off
+            p
         }
         Err(e) => {
-            log::warn!("nao consegui consultar a politica ({:#}); seguindo COM protecao", e);
-            false
+            log::warn!(
+                "nao consegui consultar a politica ({:#}); seguindo COM protecao e SEM limite",
+                e
+            );
+            auth::Politica::padrao()
         }
     }
 }
+
+/// Avisa o jogador que o limite de clientes foi atingido.
+///
+/// Uma caixa de mensagem, e não uma linha no log: em release o Loader não tem
+/// console, o launcher já fechou, e um JOGAR que simplesmente não faz nada é o
+/// pior desfecho possível — o jogador clica de novo, e de novo, e abre um chamado
+/// dizendo "o jogo não abre".
+#[cfg(windows)]
+fn avisar_limite(max: u32) {
+    caixa(
+        &format!(
+            "Você já está com {} cliente(s) do RagnaLinK aberto(s), que é o \
+             máximo permitido por computador.\n\nFeche um deles para abrir outro.",
+            max
+        ),
+        MB_ICONINFORMATION,
+    );
+}
+
+#[cfg(windows)]
+const MB_ICONINFORMATION: u32 = 0x0000_0040;
+#[cfg(windows)]
+const MB_ICONERROR: u32 = 0x0000_0010;
+
+/// Mostra uma caixa de mensagem para o jogador.
+///
+/// Sempre `MB_TOPMOST`: o RSE roda com a telinha (TOPMOST) e possivelmente com
+/// outros clientes do jogo abertos, e uma caixa escondida atrás de outra janela
+/// é o mesmo que não avisar — o jogador clicaria em JOGAR de novo achando que
+/// nada aconteceu.
+#[cfg(windows)]
+fn caixa(mensagem: &str, icone: u32) {
+    use std::os::windows::ffi::OsStrExt;
+    fn wide(s: &str) -> Vec<u16> {
+        std::ffi::OsStr::new(s)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
+    }
+    let texto = wide(mensagem);
+    let titulo = wide("RagnaShield Engine");
+    const MB_TOPMOST: u32 = 0x0004_0000;
+    // SAFETY: as duas strings terminam em NUL e vivem até o fim da chamada.
+    unsafe {
+        winapi::um::winuser::MessageBoxW(
+            std::ptr::null_mut(),
+            texto.as_ptr(),
+            titulo.as_ptr(),
+            icone | MB_TOPMOST,
+        );
+    }
+}
+
+#[cfg(not(windows))]
+fn avisar_limite(_max: u32) {}
 
 /// Resolve o caminho da DLL e faz a injeção. Isolada para o `cfg` não poluir o
 /// fluxo principal.
@@ -451,6 +591,24 @@ fn injetar(
 fn main() {
     if let Err(e) = executar() {
         log::error!("{:#}", e);
+
+        // 🚨 Falha do Loader NAO pode ser silenciosa.
+        //
+        // Em release nao ha console, e o launcher ja fechou quando chegamos
+        // aqui. Sem esta caixa, o jogador clica em JOGAR, ve a telinha aparecer
+        // e sumir, e nada acontece — entao clica de novo, e abre um chamado
+        // dizendo "o jogo nao abre", achando que o problema e do servidor.
+        //
+        // Vale sobretudo para o cliente recusado por arquivos modificados: essa
+        // pessoa merece saber que o problema esta nos arquivos DELA e que a
+        // solucao e deixar o launcher atualizar. Um anti-cheat que barra sem
+        // explicar transfere para o suporte o custo de cada bloqueio que faz.
+        //
+        // A telinha ja se fechou sozinha aqui: o `Drop` do Splash cuida disso em
+        // qualquer caminho de erro, porque ela e TOPMOST e taparia esta caixa.
+        #[cfg(windows)]
+        caixa(&auth::explicar(&e), MB_ICONERROR);
+
         // Codigo 1 = falhou. O launcher nao espera por ele nesta fase, mas a
         // Fase 5 vai, e um codigo honesto agora evita retrabalho depois.
         std::process::exit(1);

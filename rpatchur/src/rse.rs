@@ -52,6 +52,16 @@ pub enum Saida {
     Iniciado,
     /// Falhou, mas a politica manda abrir o jogo sem protecao.
     CairParaSemProtecao(String),
+    /// O Auth Service RECUSOU a sessao (banido / build barrado). Diferente de
+    /// falha tecnica: o jogo NAO abre, tentar de novo nao resolve, e a mensagem
+    /// para o jogador e outra. Nao passa pela politica `allow`.
+    Bloqueado(String),
+}
+
+/// A sessao pode voltar com a credencial, ou com uma recusa deliberada.
+enum ResultadoSessao {
+    Credencial(String),
+    Bloqueado(String),
 }
 
 /// Abre o jogo sob protecao do RSE.
@@ -64,7 +74,10 @@ pub fn launch_protected(
     client_arguments: &[String],
 ) -> Result<Saida> {
     match tentar(cfg, play_path, client_arguments) {
-        Ok(()) => Ok(Saida::Iniciado),
+        // Iniciado OU Bloqueado: os dois sao desfechos legitimos, nao falha. Um
+        // bloqueio (banimento) NAO passa pela politica `allow` de proposito — ele
+        // e uma decisao do servidor, nao uma indisponibilidade.
+        Ok(saida) => Ok(saida),
         Err(e) => {
             // A politica de indisponibilidade e uma decisao de OPERACAO, nao de
             // codigo. Em piloto, `allow` evita que um Auth Service instavel
@@ -80,7 +93,7 @@ pub fn launch_protected(
     }
 }
 
-fn tentar(cfg: &RseConfiguration, play_path: &str, client_arguments: &[String]) -> Result<()> {
+fn tentar(cfg: &RseConfiguration, play_path: &str, client_arguments: &[String]) -> Result<Saida> {
     // --- caminhos absolutos ------------------------------------------------
     //
     // Processo elevado nasce com o diretorio de trabalho em System32. Tudo o que
@@ -101,7 +114,14 @@ fn tentar(cfg: &RseConfiguration, play_path: &str, client_arguments: &[String]) 
     }
 
     // --- 1. sessao ---------------------------------------------------------
-    let credencial = abrir_sessao(cfg).context("o Auth Service nao abriu a sessao")?;
+    //
+    // O Auth Service pode recusar a sessao de propria vontade (banimento, build
+    // barrado). Isso NAO e falha tecnica: sai como `Bloqueado`, com mensagem
+    // propria, e nem chega a criar pipe ou disparar o Loader.
+    let credencial = match abrir_sessao(cfg).context("o Auth Service nao abriu a sessao")? {
+        ResultadoSessao::Bloqueado(motivo) => return Ok(Saida::Bloqueado(motivo)),
+        ResultadoSessao::Credencial(c) => c,
+    };
 
     // --- 2. pipe -----------------------------------------------------------
     //
@@ -134,7 +154,7 @@ fn tentar(cfg: &RseConfiguration, play_path: &str, client_arguments: &[String]) 
     match rx.recv_timeout(TIMEOUT_HANDOVER) {
         Ok(Ok(())) => {
             log::info!("RSE: credencial entregue ao Loader");
-            Ok(())
+            Ok(Saida::Iniciado)
         }
         Ok(Err(e)) => Err(anyhow!("falha ao entregar a credencial: {}", e)),
         Err(_) => bail!(
@@ -184,7 +204,7 @@ struct RespostaSessao {
 /// Usa o cliente HTTP bloqueante de proposito: isto roda no caminho do clique em
 /// JOGAR, que ja e sincrono hoje (o `ShellExecuteExW` do `start_executable`
 /// tambem bloqueia enquanto o UAC esta na tela).
-fn abrir_sessao(cfg: &RseConfiguration) -> Result<String> {
+fn abrir_sessao(cfg: &RseConfiguration) -> Result<ResultadoSessao> {
     let url = format!("{}/session", cfg.auth_url.trim_end_matches('/'));
 
     let cliente = reqwest::blocking::Client::builder()
@@ -203,12 +223,42 @@ fn abrir_sessao(cfg: &RseConfiguration) -> Result<String> {
     let status = resposta.status();
     let texto = resposta.text().unwrap_or_default();
 
+    // 403 = o Auth Service recusa de proposito (banimento, build barrado). E uma
+    // decisao dele, nao um defeito — vira `Bloqueado`, com a mensagem do servidor.
+    // Qualquer outro nao-2xx e falha tecnica (rseErro).
+    if status.as_u16() == 403 {
+        return Ok(ResultadoSessao::Bloqueado(motivo_curto(&texto)));
+    }
     if !status.is_success() {
         bail!("HTTP {} de {} — {}", status, url, texto.trim());
     }
     let r: RespostaSessao = serde_json::from_str(&texto)
         .with_context(|| format!("resposta inesperada do Auth Service: {}", texto))?;
-    Ok(r.session_credential)
+    Ok(ResultadoSessao::Credencial(r.session_credential))
+}
+
+/// Extrai uma mensagem legivel do corpo de erro do Auth Service ({error,message}
+/// ou texto cru), curta o bastante para caber numa linha da interface.
+fn motivo_curto(corpo: &str) -> String {
+    #[derive(serde::Deserialize)]
+    struct E {
+        #[serde(default)]
+        message: String,
+        #[serde(default)]
+        error: String,
+    }
+    if let Ok(e) = serde_json::from_str::<E>(corpo) {
+        let m = if !e.message.is_empty() { e.message } else { e.error };
+        if !m.is_empty() {
+            return m.chars().take(160).collect();
+        }
+    }
+    let t = corpo.trim();
+    if t.is_empty() {
+        "acesso recusado".to_string()
+    } else {
+        t.chars().take(160).collect()
+    }
 }
 
 /// SHA-256 do proprio executavel.
@@ -222,6 +272,69 @@ fn build_do_launcher() -> String {
         .and_then(std::fs::read)
         .map(|b| to_hex(&sha256(&b)))
         .unwrap_or_else(|_| "0".repeat(64))
+}
+
+// ===========================================================================
+//  Diagnostico para o suporte (ponto L6 — comando `rse_diag`)
+// ===========================================================================
+
+/// Gera o relatorio de diagnostico do RSE e devolve um codigo curto de suporte.
+///
+/// Escreve `rse_diag.txt` ao lado do jogo (junto dos logs do Loader e da DLL) e
+/// devolve um codigo tipo `RSE-4F2A` para o jogador passar ao suporte — o mesmo
+/// codigo fica gravado no arquivo, entao um casa com o outro. Nao contem segredo:
+/// a `auth_url` e publica, e nao ha chave nenhuma do lado do launcher.
+pub fn gerar_diagnostico(cfg: &RseConfiguration, play_path: &str, contexto: &str) -> String {
+    use rse_protocol::crypto::{sha256, to_hex};
+
+    let base = pasta_do_executavel().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let jogo = base.join(play_path);
+    let dir = jogo.parent().map(|p| p.to_path_buf()).unwrap_or(base);
+
+    let agora = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    let mut corpo = String::new();
+    corpo.push_str("=== RagnaShield Engine — diagnostico ===\n");
+    corpo.push_str(&format!("contexto     : {}\n", contexto));
+    corpo.push_str(&format!("quando (unix): {}\n", agora));
+    corpo.push_str(&format!("protocolo    : {}\n", rse_protocol::version::RSE_PROTOCOL));
+    corpo.push_str(&format!("launcher(sha): {}\n", build_do_launcher()));
+    corpo.push_str(&format!("auth_url     : {}\n", cfg.auth_url));
+    corpo.push_str(&format!("loader_path  : {}\n", cfg.loader_path));
+    corpo.push_str(&format!("on_unavail   : {}\n", cfg.on_service_unavailable));
+    corpo.push_str(&format!("so           : {}\n", std::env::consts::OS));
+    corpo.push_str(&format!("jogo         : {}\n", jogo.display()));
+    corpo.push_str("\n--- rse_loader.log (fim) ---\n");
+    corpo.push_str(&fim_do_arquivo(&dir.join("rse_loader.log"), 60));
+    corpo.push_str("\n\n--- rse_watchdog.log (fim) ---\n");
+    corpo.push_str(&fim_do_arquivo(&dir.join("rse_watchdog.log"), 60));
+
+    // Codigo curto: primeiros 4 hex do SHA-256 do corpo (com o `agora` dentro,
+    // entao cada diagnostico tem o seu). Calculado ANTES de escrever a linha do
+    // codigo, para o valor ser estavel.
+    let codigo = format!("RSE-{}", to_hex(&sha256(corpo.as_bytes()))[..4].to_uppercase());
+    corpo.push_str(&format!("\ncodigo       : {}\n", codigo));
+
+    let alvo = dir.join("rse_diag.txt");
+    if let Err(e) = std::fs::write(&alvo, &corpo) {
+        log::warn!("nao consegui gravar {}: {}", alvo.display(), e);
+    }
+    codigo
+}
+
+/// As ultimas `n` linhas de um arquivo de texto (ou um aviso se nao der para ler).
+fn fim_do_arquivo(caminho: &std::path::Path, n: usize) -> String {
+    match std::fs::read_to_string(caminho) {
+        Ok(txt) => {
+            let linhas: Vec<&str> = txt.lines().collect();
+            let inicio = linhas.len().saturating_sub(n);
+            linhas[inicio..].join("\n")
+        }
+        Err(e) => format!("(sem {}: {})", caminho.display(), e),
+    }
 }
 
 // ===========================================================================
@@ -393,16 +506,33 @@ mod plataforma {
         v
     }
 
-    /// Dispara o Loader **elevado**.
+    /// Dispara o Loader **sem elevacao**.
     ///
-    /// Mesmo mecanismo que o `start_executable` ja usa para o jogo hoje
-    /// (`ShellExecuteExW` com verbo `runas`), e pela mesma razao: o Ragexe roda
-    /// elevado, e Loader e Ragexe precisam estar no mesmo nivel de integridade
-    /// para a injecao da Fase 5 funcionar. Processo de integridade media nao
-    /// injeta em processo elevado.
+    /// # Por que era `runas`, e por que deixou de ser
     ///
-    /// Do ponto de vista do jogador nao muda nada: continua sendo **um** dialogo
-    /// de UAC ao clicar em JOGAR, so que do Loader em vez do jogo.
+    /// O `RagnaLinK_ptBR5.exe` trazia no manifesto
+    /// `requestedExecutionLevel level="requireAdministrator"`, entao o Windows
+    /// **recusava** cria-lo sem elevacao. Como o processo filho herda o token do
+    /// pai, o Loader tinha que nascer elevado para conseguir criar o jogo — e o
+    /// UAC ao clicar em JOGAR vinha dai, nao de uma escolha nossa.
+    ///
+    /// O manifesto do cliente passou a ser `asInvoker`. Com isso o jogo roda em
+    /// integridade media, o Loader tambem, a injecao segue funcionando (media
+    /// injeta em media) e **o jogador nao ve UAC nenhum**.
+    ///
+    /// Tres ganhos, e o terceiro e o que mais importa:
+    ///
+    /// 1. Menos um clique, para todo mundo, toda vez.
+    /// 2. **Conta padrao do Windows volta a funcionar.** Com `runas`, quem nao e
+    ///    administrador nao recebe um "Sim/Nao": recebe um pedido de **usuario e
+    ///    senha de administrador**. Quem nao tem essa senha — PC de familia, do
+    ///    trabalho, notebook gerenciado — simplesmente nao conseguia jogar.
+    /// 3. Um injetor **nao** elevado levanta bem menos suspeita de antivirus do
+    ///    que um elevado, o que ajuda no problema de assinatura de codigo (D6).
+    ///
+    /// Quem tiver o cliente antigo (ainda `requireAdministrator`) leva erro 740
+    /// no `CreateProcessW`; o Loader traduz isso em "atualize pelo launcher" em
+    /// vez de falhar em silencio. Ver `jogo.rs`.
     pub fn disparar_loader(loader: &Path, dir: &Path, args: &[String]) -> Result<()> {
         use winapi::ctypes::c_int;
         use winapi::shared::minwindef::{BOOL, ULONG};
@@ -425,7 +555,9 @@ mod plataforma {
         // trabalho do launcher, e um processo elevado criado pelo servico
         // AppInfo pode nascer em System32.
         let diretorio = para_wide(dir.to_str().unwrap_or_default());
-        let operacao = para_wide("runas");
+        // "open" em vez de "runas": sem pedido de elevacao. O Loader nasce no
+        // mesmo nivel de integridade do launcher (media), que e o mesmo do jogo.
+        let operacao = para_wide("open");
         let classe = para_wide("exefile");
 
         let mut info = SHELLEXECUTEINFOW {

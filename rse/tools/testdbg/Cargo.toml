@@ -1,0 +1,30 @@
+[package]
+name = "rse-testdbg"
+version = "0.1.0"
+edition = "2018"
+rust-version = "1.68.2"
+description = "RagnaShield Engine — anexa um depurador de teste, para exercitar a deteccao 3001"
+publish = false
+
+# Ferramenta de TESTE, nao vai para jogador nenhum. Existe para provar que a
+# deteccao de depurador funciona sem depender de baixar x64dbg ou instalar o
+# Visual Studio completo: ela usa a mesma API que qualquer depurador usa
+# (DebugActiveProcess), entao aciona exatamente os mesmos sinais.
+#
+#   cargo run -p rse-testdbg
+#   cargo run -p rse-testdbg -- 90        (segundos anexado)
+
+[[bin]]
+name = "rse-testdbg"
+path = "src/main.rs"
+
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3.6", features = [
+    "debugapi",
+    "minwinbase",
+    "tlhelp32",
+    "handleapi",
+    "errhandlingapi",
+    "minwindef",
+    "winnt",
+] }
