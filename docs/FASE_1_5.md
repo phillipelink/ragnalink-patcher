@@ -1,7 +1,8 @@
 # Fase 1.5 — Destravar a toolchain
 
 **Relatório técnico e plano de execução**
-**Data:** 21/08/2026 · **Estado:** ✅ **Passo A concluído e validado no Windows** — ver §0
+**Data:** 21/08/2026 · **Estado:** ✅ **Passo A concluído e validado no Windows** — ver §0.
+O Passo B tem um bloqueio conhecido: §4b.
 
 ---
 
@@ -217,6 +218,43 @@ dependência mais moderna *e* mais tolerante que a atual.
 O `RagnaLinK.exe` sai deste passo compilado pelo **mesmo compilador de antes**, com o mesmo
 `web-view`, o mesmo `winapi`, o mesmo `tinyfiledialogs`. Se a janela mudar de comportamento
 depois do Passo A, a causa está num conjunto de 8 crates — não de 130.
+
+---
+
+## 4b. 🚨 Um bloqueio do Passo B, descoberto na Fase 4
+
+Compilando o launcher contra um rustc moderno (1.95), aparece um erro que **nao
+existe** na 1.68.2:
+
+```
+error[E0061]: this method takes 0 arguments but 1 argument was supplied
+   --> rpatchur/src/patcher/core.rs:170:15
+    |
+170 |     lock_file.try_lock(FileLockMode::Exclusive)?;
+    |               ^^^^^^^^ ----------------------- unexpected argument
+```
+
+**A causa nao e o codigo do fork — e a biblioteca padrao.** O Rust 1.89 estabilizou
+`std::fs::File::try_lock`. Metodo inerente vence metodo de trait na resolucao, entao a
+chamada passa a resolver para o `try_lock()` do `std`, que nao recebe argumento, em vez do
+`try_lock(FileLockMode)` do crate `advisory_lock`.
+
+Na 1.68.2 o metodo inerente nao existe e tudo funciona. Ou seja: **o Passo A esta a salvo, o
+Passo B nao.** Isto foi encontrado por acaso, ao compilar a Fase 4 para conferir o Loader —
+e teria aparecido no meio do Passo B, sem contexto.
+
+**Correcao (uma linha), para quando o Passo B acontecer:**
+
+```rust
+// Chamada totalmente qualificada: diz explicitamente que se quer o metodo do
+// trait, e nao o homonimo que o std ganhou na 1.89.
+AdvisoryFileLock::try_lock(&lock_file, FileLockMode::Exclusive)?;
+```
+
+A alternativa e migrar para o bloqueio nativo do `std` e remover o `advisory_lock` da
+arvore — mais limpo a longo prazo, mas e mudanca de comportamento (o `std` e o crate tratam
+`WouldBlock` de formas diferentes) e por isso nao cabe junto de uma troca de compilador.
+Uma coisa de cada vez.
 
 ---
 

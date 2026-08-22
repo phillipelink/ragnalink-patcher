@@ -1,0 +1,23 @@
+<!-- ===================================================================
+     RagnaShield Engine — retorno de erro para a interface
+     ===================================================================
+     Cole dentro do <script> que ja existe no index.html.
+
+     O launcher chama estas funcoes com `typeof x === 'function'` antes, entao
+     ele funciona com index.html antigo tambem: sem elas, o erro so vai para o
+     log. Com elas, o jogador ve o motivo em vez de clicar em JOGAR e nada
+     acontecer - que e o pior desfecho possivel.
+-->
+<script>
+  // Chamada quando o RSE impede o jogo de abrir.
+  function rseErro(mensagem) {
+    console.error('[RSE]', mensagem);
+    // Troque por como o seu layout ja mostra aviso. O alert e so o minimo que
+    // garante que a mensagem chega ao jogador.
+    alert('Nao foi possivel iniciar o jogo com protecao:\n\n' + mensagem);
+  }
+
+  // Reservadas para a Fase 5, quando o Loader reportar progresso.
+  function rseStatus(texto)     { console.log('[RSE]', texto); }
+  function rseBloqueado(motivo) { rseErro(motivo); }
+</script>

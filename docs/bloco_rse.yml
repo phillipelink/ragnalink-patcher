@@ -1,0 +1,28 @@
+# ===========================================================================
+# RagnaShield Engine (RSE)
+# ===========================================================================
+# Bloco OPCIONAL. Sem ele, ou com `enabled: false`, o launcher abre o jogo
+# exatamente como antes do RSE existir - o caminho e o mesmo codigo de sempre.
+rse:
+  # Ligue so quando o rse_loader.exe estiver na pasta e o Auth Service no ar.
+  enabled: true
+
+  # Caminho do Loader, RELATIVO a pasta do launcher.
+  # Relativo, e nao absoluto, pelo mesmo motivo do index_url: o jogador instala
+  # onde quiser, e caminho absoluto no arquivo distribuido so vale na maquina
+  # de quem gerou o arquivo.
+  loader_path: rse\rse_loader.exe
+
+  # Base do RSE Auth Service. HTTPS pelo nome publico - o Loader fala com o
+  # mundo de fora, nao com 127.0.0.1.
+  auth_url: https://ragnalink.com.br/rse/v1
+
+  # O que fazer quando o Auth Service nao responde:
+  #   block = nao abre o jogo (correto em producao)
+  #   allow = abre sem protecao e registra (use no piloto)
+  # Enquanto a DLL da Fase 5 nao existir, `allow` evita que um problema no
+  # servico impeca alguem de jogar sem que haja protecao real a perder.
+  on_service_unavailable: allow
+
+  # Prazo dos pedidos HTTP ao Auth Service, em milissegundos.
+  timeout_ms: 8000

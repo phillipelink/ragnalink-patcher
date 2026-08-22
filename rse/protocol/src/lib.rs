@@ -59,8 +59,10 @@
 #![warn(missing_debug_implementations)]
 
 pub mod crypto;
+pub mod dll_config;
 pub mod error;
 pub mod frame;
+pub mod handover;
 pub mod replay;
 pub mod ticket;
 pub mod version;

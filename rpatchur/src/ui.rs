@@ -549,15 +549,65 @@ fn handle_open_url(parameters: Value) {
     }
 }
 
+/// Chama uma funcao da interface SEM quebrar paginas antigas.
+///
+/// O `index.html` distribuido hoje nao conhece `rseErro`. Chamar direto daria
+/// ReferenceError no MSHTML e a mensagem se perderia justamente quando ela mais
+/// importa. O `typeof` deixa o launcher funcionar com as duas versoes da pagina.
+fn avisar_ui(webview: &mut WebView<WebViewUserData>, funcao: &str, texto: &str) {
+    // Escapamos o basico: a mensagem pode conter caminho do Windows (barras
+    // invertidas) e aspas vindas de mensagem de erro do sistema.
+    let seguro = texto.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', " ");
+    let js = format!(
+        "if (typeof {f} === 'function') {{ {f}(\"{m}\"); }}",
+        f = funcao,
+        m = seguro
+    );
+    if let Err(e) = webview.eval(&js) {
+        log::warn!("Nao consegui avisar a interface ({}): {}", funcao, e);
+    }
+}
+
+/// Abre o cliente do jogo.
+///
+/// # O unico ponto de decisao do RSE no launcher
+///
+/// Com `rse.enabled: true`, o jogo passa pelo `rse_loader.exe`; sem isso, o
+/// caminho e byte a byte o de antes do RSE existir. Toda a logica de protecao
+/// mora do outro lado desta chamada - o launcher nao sabe o que o Loader faz, e
+/// nao deve saber.
+///
+/// `client_arguments` (que carrega o `"1sak1"`) atravessa **intacto** nos dois
+/// caminhos.
 fn start_game_client(webview: &mut WebView<WebViewUserData>, client_arguments: &[String]) {
-    let client_exe: &String = &webview.user_data().patcher_config.play.path;
-    let exit_on_success = webview
-        .user_data()
-        .patcher_config
-        .play
-        .exit_on_success
-        .unwrap_or(true);
-    match start_executable(client_exe, client_arguments) {
+    // Clonado antes de qualquer coisa: `webview.exit()` la embaixo precisa de
+    // emprestimo mutavel, e segurar uma referencia a `user_data` ate la
+    // impediria isso.
+    let cfg = webview.user_data().patcher_config.clone();
+    let exit_on_success = cfg.play.exit_on_success.unwrap_or(true);
+
+    let resultado: anyhow::Result<bool> = match cfg.rse.as_ref().filter(|r| r.enabled) {
+        Some(rse_cfg) => match crate::rse::launch_protected(rse_cfg, &cfg.play.path, client_arguments)
+        {
+            // O Loader assumiu: ele e quem cria o processo do jogo.
+            Ok(crate::rse::Saida::Iniciado) => Ok(true),
+
+            // Politica `allow`: o RSE falhou e a operacao mandou abrir assim
+            // mesmo. Repare que e AQUI que o jogo abre - o `launch_protected`
+            // nao chegou a criar processo nenhum. Sem esta linha, `allow` teria
+            // o mesmo efeito pratico de `block`, so que silencioso: o jogador
+            // clicaria em JOGAR e nada aconteceria.
+            Ok(crate::rse::Saida::CairParaSemProtecao(motivo)) => {
+                log::warn!("RSE indisponivel, abrindo SEM protecao: {}", motivo);
+                start_executable(&cfg.play.path, client_arguments)
+            }
+
+            Err(e) => Err(e),
+        },
+        None => start_executable(&cfg.play.path, client_arguments),
+    };
+
+    match resultado {
         Ok(success) => {
             if success {
                 log::trace!("Client started");
@@ -567,7 +617,11 @@ fn start_game_client(webview: &mut WebView<WebViewUserData>, client_arguments: &
             }
         }
         Err(e) => {
-            log::warn!("Failed to start client: {}", e);
+            // Com RSE ligado e politica `block`, cair aqui significa que o jogo
+            // NAO abriu. Registrar so no log deixaria o jogador clicando em
+            // JOGAR sem nada acontecer, que e o pior desfecho possivel.
+            log::warn!("Failed to start client: {:#}", e);
+            avisar_ui(webview, "rseErro", &format!("{:#}", e));
         }
     }
 }

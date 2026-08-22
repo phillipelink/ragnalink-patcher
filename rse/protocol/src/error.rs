@@ -125,6 +125,104 @@ impl fmt::Display for FrameError {
 
 impl std::error::Error for FrameError {}
 
+/// Falhas na entrega da credencial (launcher -> Loader).
+///
+/// Faixa 201..299, separada das outras duas pelo mesmo motivo: um codigo em log
+/// tem que dizer sozinho de qual canal ele veio.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u16)]
+pub enum HandoverError {
+    /// Bytes insuficientes para o cabecalho ou para a credencial anunciada.
+    Truncated = 201,
+    /// Nao comeca com "RSEH".
+    BadMagic = 202,
+    /// Versao do handover diferente.
+    BadVersion = 203,
+    /// Credencial de tamanho zero.
+    Empty = 204,
+    /// Acima de `HANDOVER_MAX_CREDENTIAL`.
+    TooLong = 205,
+    /// A credencial nao e UTF-8 valido.
+    NotUtf8 = 206,
+    /// Bytes depois do fim do quadro.
+    ///
+    /// Num canal de UMA mensagem so, lixo no fim nao e ruido de rede - e sinal
+    /// de que quem escreveu no pipe nao e quem deveria.
+    TrailingBytes = 207,
+}
+
+impl HandoverError {
+    pub fn code(self) -> u16 {
+        self as u16
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            HandoverError::Truncated => "HANDOVER_TRUNCATED",
+            HandoverError::BadMagic => "HANDOVER_BAD_MAGIC",
+            HandoverError::BadVersion => "HANDOVER_BAD_VERSION",
+            HandoverError::Empty => "HANDOVER_EMPTY",
+            HandoverError::TooLong => "HANDOVER_TOO_LONG",
+            HandoverError::NotUtf8 => "HANDOVER_NOT_UTF8",
+            HandoverError::TrailingBytes => "HANDOVER_TRAILING_BYTES",
+        }
+    }
+}
+
+impl fmt::Display for HandoverError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
+impl std::error::Error for HandoverError {}
+
+/// Falhas ao interpretar a configuracao entregue a DLL na injecao.
+///
+/// Faixa 301..399, separada das outras tres pelo mesmo motivo de sempre: um
+/// codigo em log tem que dizer sozinho de qual canal ele veio.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u16)]
+pub enum DllConfigError {
+    /// Bytes insuficientes para o cabecalho ou para o nome do pipe.
+    Truncated = 301,
+    /// Nao comeca com "RSED".
+    BadMagic = 302,
+    /// Versao do formato diferente.
+    BadVersion = 303,
+    /// Nome de pipe de tamanho zero.
+    EmptyPipe = 304,
+    /// Nome de pipe acima de `DLL_CONFIG_MAX_PIPE`.
+    PipeTooLong = 305,
+    /// Nome do pipe nao e UTF-8 valido.
+    PipeNotUtf8 = 306,
+}
+
+impl DllConfigError {
+    pub fn code(self) -> u16 {
+        self as u16
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            DllConfigError::Truncated => "DLLCFG_TRUNCATED",
+            DllConfigError::BadMagic => "DLLCFG_BAD_MAGIC",
+            DllConfigError::BadVersion => "DLLCFG_BAD_VERSION",
+            DllConfigError::EmptyPipe => "DLLCFG_EMPTY_PIPE",
+            DllConfigError::PipeTooLong => "DLLCFG_PIPE_TOO_LONG",
+            DllConfigError::PipeNotUtf8 => "DLLCFG_PIPE_NOT_UTF8",
+        }
+    }
+}
+
+impl fmt::Display for DllConfigError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
+impl std::error::Error for DllConfigError {}
+
 /// Falha ao obter entropia do sistema.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RandomError;
@@ -185,12 +283,53 @@ mod tests {
         }
     }
 
-    /// Ticket e frame usam faixas separadas (1..99 e 101..199) para que um
-    /// codigo em log nunca seja ambiguo.
+    #[test]
+    fn codigos_e_rotulos_de_handover_estao_congelados() {
+        let esperado: [(HandoverError, u16, &str); 7] = [
+            (HandoverError::Truncated, 201, "HANDOVER_TRUNCATED"),
+            (HandoverError::BadMagic, 202, "HANDOVER_BAD_MAGIC"),
+            (HandoverError::BadVersion, 203, "HANDOVER_BAD_VERSION"),
+            (HandoverError::Empty, 204, "HANDOVER_EMPTY"),
+            (HandoverError::TooLong, 205, "HANDOVER_TOO_LONG"),
+            (HandoverError::NotUtf8, 206, "HANDOVER_NOT_UTF8"),
+            (HandoverError::TrailingBytes, 207, "HANDOVER_TRAILING_BYTES"),
+        ];
+        for (e, codigo, rotulo) in esperado {
+            assert_eq!(e.code(), codigo, "codigo de {:?}", e);
+            assert_eq!(e.label(), rotulo, "rotulo de {:?}", e);
+            assert_eq!(format!("{}", e), rotulo);
+        }
+    }
+
+    #[test]
+    fn codigos_e_rotulos_de_dllconfig_estao_congelados() {
+        let esperado: [(DllConfigError, u16, &str); 6] = [
+            (DllConfigError::Truncated, 301, "DLLCFG_TRUNCATED"),
+            (DllConfigError::BadMagic, 302, "DLLCFG_BAD_MAGIC"),
+            (DllConfigError::BadVersion, 303, "DLLCFG_BAD_VERSION"),
+            (DllConfigError::EmptyPipe, 304, "DLLCFG_EMPTY_PIPE"),
+            (DllConfigError::PipeTooLong, 305, "DLLCFG_PIPE_TOO_LONG"),
+            (DllConfigError::PipeNotUtf8, 306, "DLLCFG_PIPE_NOT_UTF8"),
+        ];
+        for (e, codigo, rotulo) in esperado {
+            assert_eq!(e.code(), codigo, "codigo de {:?}", e);
+            assert_eq!(e.label(), rotulo, "rotulo de {:?}", e);
+            assert_eq!(format!("{}", e), rotulo);
+        }
+    }
+
+    /// Ticket, frame, handover e dll_config usam faixas separadas (1..99,
+    /// 101..199, 201..299 e 301..399) para que um codigo em log nunca seja
+    /// ambiguo.
     #[test]
     fn as_faixas_de_codigo_nao_se_cruzam() {
         assert!(TicketError::BadTtl.code() < 100);
         assert!(FrameError::Truncated.code() > 100);
+        assert!(FrameError::UnknownOpcode.code() < 200);
+        assert!(HandoverError::Truncated.code() > 200);
+        assert!(HandoverError::TrailingBytes.code() < 300);
+        assert!(DllConfigError::Truncated.code() > 300);
+        assert!(DllConfigError::PipeNotUtf8.code() < 400);
     }
 
     #[test]

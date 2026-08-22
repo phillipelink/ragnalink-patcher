@@ -1,17 +1,7 @@
+[workspace]
+members = ["rse/protocol", "rse/loader", "rse/watchdog", "rse/tools/smoke"]
+resolver = "1"
+
 [profile.release]
 lto = true
 panic = 'abort'
-
-[workspace]
-# rse/protocol entrou aqui na Fase 2 do RagnaShield Engine.
-#
-# E o unico crate do RSE que existe por enquanto - e de proposito: ele nao faz
-# I/O nem toca em Windows API, entao `cargo test` do workspace inteiro continua
-# rodando em qualquer maquina. O rse/loader e o rse/watchdog entram nas Fases 4
-# e 5, e ai sim serao especificos de Windows/i686.
-#
-# Nada em gruf/, mkpatch/ ou rpatchur/ mudou nesta fase.
-# rse/tools/smoke entrou na Fase 3b: prova o circuito do servidor de ponta a
-# ponta (Auth Service -> login-server) antes de existir Loader ou DLL. E uma
-# ferramenta de diagnostico, nao vai para o jogador.
-members = ["gruf", "rpatchur", "mkpatch", "rse/protocol", "rse/tools/smoke"]

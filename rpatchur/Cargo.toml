@@ -25,6 +25,7 @@ winres = "0.1"
 
 [dependencies]
 gruf = { version = "0.2", path = "../gruf" }
+rse-protocol = { path = "../rse/protocol" }
 
 open = "1.7.0"
 web-view = "0.7.3"
@@ -32,7 +33,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_yaml = "0.8"
 futures = "0.3"
 tokio = { version = "1.8", features = ["macros", "fs", "sync", "io-util"] }
-reqwest = { version = "0.11", features = ["stream"] }
+reqwest = { version = "0.11", features = ["stream", "blocking", "json"] }
 url = "2.2"
 tempfile = "3.1"
 log = { version = "0.4", features = ["release_max_level_off"] }
@@ -52,7 +53,13 @@ advisory-lock = "0.3"
 # wingdi entrou depois, para o `moldar_janela`: e de la que vem CreateRectRgn,
 # SetRectRgn, CombineRgn e DeleteObject, que montam a regiao usada para recortar
 # a janela no formato da arte.
-winapi = { version = "0.3.6", features = ["shellapi", "winuser", "windef", "minwindef", "processthreadsapi", "wingdi"] }
+# namedpipeapi/fileapi/handleapi/errhandlingapi/winbase entraram com o RSE:
+# sao o pipe que entrega a credencial de sessao ao Loader sem passar pela
+# linha de comando. Ver rpatchur/src/rse.rs.
+winapi = { version = "0.3.6", features = [
+    "shellapi", "winuser", "windef", "minwindef", "processthreadsapi", "wingdi",
+    "namedpipeapi", "fileapi", "handleapi", "errhandlingapi", "winbase", "winnt",
+] }
 
 [dev-dependencies]
 twox-hash = "1.5"

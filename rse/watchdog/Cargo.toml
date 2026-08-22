@@ -1,0 +1,45 @@
+[package]
+name = "rse-watchdog"
+version = "0.1.0"
+edition = "2018"
+rust-version = "1.68.2"
+description = "RagnaShield Engine — DLL de integridade e heartbeat (rse_watchdog.dll)"
+publish = false
+
+# Compila como cdylib -> rse_watchdog.dll. NAO existe um quarto diretorio para a
+# DLL: o papel dela E ser o watchdog in-process (ADR-006).
+#
+# Alvo de producao: i686-pc-windows-msvc, obrigatoriamente. A DLL e carregada
+# DENTRO do Ragexe, que e 32 bits - arquitetura diferente nem carrega.
+#
+#   cargo build --release --target i686-pc-windows-msvc -p rse-watchdog
+[lib]
+name = "rse_watchdog"
+crate-type = ["cdylib"]
+
+[dependencies]
+rse-protocol = { path = "../protocol" }
+
+# So no Windows. Fora dele o crate ainda COMPILA (para o `cargo check` do
+# workspace valer em qualquer maquina), mas a DLL de verdade nao faz sentido.
+[target.'cfg(windows)'.dependencies]
+# Mesma versao do resto do projeto - nenhuma aresta nova no grafo.
+# libloaderapi: GetModuleHandle/GetProcAddress para achar send/WSASend (Fase 5b).
+# namedpipeapi/fileapi/handleapi: o canal com o Loader.
+# processthreadsapi/synchapi: a thread do RSE e os prazos.
+# memoryapi: ler a config que o Loader escreveu na nossa memoria.
+winapi = { version = "0.3.6", features = [
+    "libloaderapi",
+    "namedpipeapi",
+    "fileapi",
+    "handleapi",
+    "processthreadsapi",
+    "synchapi",
+    "memoryapi",
+    "errhandlingapi",
+    "winbase",
+    "winnt",
+    "minwindef",
+    "winsock2",
+    "ws2def",
+] }

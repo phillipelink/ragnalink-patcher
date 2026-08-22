@@ -1,6 +1,6 @@
 # RagnaShield Engine — Roadmap
 
-**Versão:** 1.7 — 21/08/2026 (Fases 1.5, 2, 3a e 3b concluídas)
+**Versão:** 2.0 — 22/08/2026 (Fase **5a** PROVADA: DLL injetada e falando com o Loader em produção)
 
 ---
 
@@ -19,7 +19,8 @@ gantt
     Fase 3b RSE Auth Service              :done, f3b, after f3a, 1d
     section Execução
     Fase 1.5 Destravar toolchain          :done, f15, after f3b, 1d
-    Fase 4  RSE Loader + integração       :active, f4, after f15, 21d
+    Fase 4a RSE Loader sem injecao        :done, f4a, after f15, 1d
+    Fase 4b Politica, kill-switch, UI     :active, f4b, after f4a, 7d
     Fase 5  RSE DLL — integridade         :f5, after f4, 21d
     section Endurecimento
     Fase 6  Detecções avançadas           :f6, after f5, 30d
@@ -400,7 +401,88 @@ O Loader da Fase 4 fala HTTPS pelo nome público e não precisa disto.
 
 ---
 
-## Fase 4 — RSE Loader + integração no launcher
+## Fase 4a — RSE Loader (sem injeção) ✅ *concluída em 22/08/2026*
+
+O jogo passou a abrir **através do Loader**, com credencial e ticket reais. A injeção da
+DLL é Fase 5; esta metade prova o encanamento.
+
+```
+launcher ──(POST /session)──► Auth Service
+   │  cria pipe \\.\pipe\rse-<128 bits aleatorios>
+   │  ShellExecuteExW("runas", rse_loader.exe, "--pipe … -- 1sak1")
+   │  escreve a credencial e ESPERA a leitura (FlushFileBuffers)
+   ▼
+Loader (elevado) ──(POST /ticket)──► Auth Service    [148 bytes, 30 s]
+   │  CreateProcessW(CREATE_SUSPENDED) + lpCurrentDirectory explicito
+   ▼
+Ragexe (elevado) — igual a antes
+```
+
+**Duas mudanças no plano original, decididas em 21/08 e documentadas em
+`docs/FASE_4_ANALISE.md`:**
+
+1. **ADR-004 revisto: a credencial vai por named pipe, não por handle herdado.** Herdar
+   handle exige `CreateProcess`, e o Loader precisa nascer elevado (`ShellExecuteExW` +
+   `runas`) para poder injetar no Ragexe elevado na Fase 5. As duas coisas são mutuamente
+   exclusivas nessas APIs. O pipe atende os dois objetivos: some da linha de comando **e**
+   atravessa a fronteira de elevação (política *no-write-up* do Windows).
+2. **O Loader é i686.** A DLL da Fase 5 tem que ter a arquitetura do Ragexe, e uma
+   diferença gratuita entre Loader e DLL no ponto mais delicado do projeto não se paga.
+
+**Resultados medidos**
+
+| Critério de aceite | Alvo | Obtido |
+|---|---|---|
+| Jogo abre pelo Loader, em produção | — | ✅ |
+| `"1sak1"` chega intacto ao Ragexe | — | ✅ `"…\RagnaLinK_ptBR5.exe" 1sak1`, lido do `Win32_Process` |
+| Credencial fora da linha de comando | — | ✅ por construção — o pipe |
+| `gruf/`, `mkpatch/`, `process.rs`, `core.rs`, `patching.rs` intocados | byte a byte | ✅ **8 arquivos conferidos, todos idênticos** |
+| Testes do `rse-protocol` + Loader | — | **82** (64 + 18) |
+| `clippy -- -D warnings` | limpo | limpo |
+| Compila para Windows na toolchain travada | sim | ✅ 1.68.2, i686 e x86_64 |
+| **Diff no `rpatchur/`** | ≤ 50 linhas | **47 de código** ⚠️ *ver nota* |
+
+> ⚠️ **Nota honesta sobre o diff.** O `git diff` do `rpatchur/` mostra **128 linhas**. Delas,
+> **47 são código executável** — dentro do teto de 50. As outras 81 são 58 linhas de
+> comentário e 11 em branco. O critério não dizia qual das duas contagens valia. Registrando
+> as duas para você decidir: se o teto for de diff bruto, ele estourou 2,5×; se for de
+> código, passou raspando. O comentário segue o padrão do próprio fork, cuja qualidade a
+> `ARCHITECTURE.md` §0 destacou — mas isso é justificativa, não medição.
+
+**Três armadilhas do Windows que o código trata, e que teriam custado caro**
+
+1. **Diretório de trabalho.** Processo elevado criado pelo AppInfo nasce em `System32`. O
+   Ragexe carrega `data.grf` por caminho relativo. `lpCurrentDirectory` e `lpDirectory` são
+   passados explícitos nos dois pontos.
+2. **Citação da linha de comando.** `C:\Pasta Com Espaco\` citado ingenuamente vira
+   `"C:\Pasta Com Espaco"`, com a aspa final escapada engolindo o argumento seguinte. Tem
+   teste dedicado; é do que depende o `1sak1`.
+3. **A corrida com `exit_on_success`.** O launcher fecha assim que dispara o jogo. Sem o
+   `FlushFileBuffers` — que num pipe bloqueia até o cliente ter lido — o launcher poderia
+   morrer antes de o Loader ler a credencial. Bug intermitente, só em máquina lenta.
+
+**Um susto que não era bug:** *"Cannot init d3d OR grf file has problem"*. O mesmo comando
+falhava **na mão**, sem Loader nenhum — era um Ragexe pendurado de um teste anterior
+segurando o dispositivo D3D. Virou o passo 0 do `SOCORRO.md` §3, antes de qualquer mexida
+em registro, porque a mensagem é idêntica à do problema de resolução e dá para perder uma
+noite no lugar errado.
+
+---
+
+## Fase 4b — Política, kill-switch e UI 🎯 *próxima*
+
+O que ficou de fora da 4a e ainda pertence à Fase 4:
+
+- Consulta ao kill-switch a cada 60 s (o Loader hoje sai depois do `ResumeThread`)
+- `PatchingStatus::RseStatus(RsePhase)` e `rseStatus()` na interface (pontos L5 e L6)
+- Comando `rse_diag` para suporte
+- Testar `rse.enabled: false` e YAML **sem** o bloco `rse:` — os dois critérios de
+  compatibilidade ainda não exercitados
+- Teste com UAC ligado em conta padrão (só foi testado em conta de administrador)
+
+---
+
+## Fase 4 — RSE Loader + integração no launcher *(escopo original, para referência)*
 
 **Entregáveis**
 
@@ -421,7 +503,7 @@ O Loader da Fase 4 fala HTTPS pelo nome público e não precisa disto.
 - [ ] Diff permanente no `rpatchur/` ≤ 50 linhas
 - [ ] `gruf/`, `mkpatch/`, `process.rs`, `patcher/core.rs`, `patching.rs` intocados —
       **verificado por teste de CI**, não por confiança
-- [ ] Matar o Loader encerra o cliente em ≤ 20 s
+- [x] Matar o Loader encerra o cliente em ≤ 20 s **(testado na 5a: ~15 s)**
 - [ ] Credencial não aparece em `wmic process get commandline`
 - [ ] `"1sak1"` chega intacto ao Ragexe
 - [ ] Testado com UAC ligado, conta padrão e conta administrador
@@ -436,7 +518,102 @@ O Loader da Fase 4 fala HTTPS pelo nome público e não precisa disto.
 
 ---
 
-## Fase 5 — RSE DLL: integridade e heartbeat
+## Fase 5a — DLL injetável + canal cifrado ✅ *provada em 22/08/2026, na primeira tentativa*
+
+A DLL passou a existir, a ser injetável, e a conversar com o Loader por um canal
+AES-256-GCM. O que ela **ainda não faz** é o que fecha o circuito de verdade — isso é 5b/5c
+(ver abaixo). Esta metade prova a parte mais arriscada de tudo: **injetar código no Ragexe e
+falar com ele em segurança**.
+
+```
+rse/watchdog/                       novo crate, cdylib -> rse_watchdog.dll (i686)
+├── src/lib.rs                       DllMain minimo + rse_configure (export) + thread
+├── src/canal.rs                     handshake HELLO/HELLO_ACK + heartbeat (Rust seguro)
+├── src/sys.rs                       TODO o unsafe da DLL, concentrado
+└── src/mensagens.rs                 payloads (puro, testavel em qualquer maquina)
+
+rse/protocol/src/dll_config.rs       novo — o blob {pipe, K_s, session_id} da injecao
+rse/loader/src/injecao.rs            novo — LoadLibrary remoto + handshake + vigilancia
+```
+
+**O que foi construído**
+
+- **Injeção clássica, comentada passo a passo.** O Loader escreve o caminho da DLL na
+  memória do Ragexe suspenso, chama `LoadLibraryW` por `CreateRemoteThread`, lê a base do
+  módulo do código de saída da thread, escreve o blob de config numa segunda região, e chama
+  `rse_configure` apontando para o endereço remoto — calculado por RVA a partir da própria
+  cópia da DLL.
+- **A `K_s` nunca toca linha de comando, ambiente ou seção nomeada.** Vai por memória anônima
+  escrita no alvo, cujo endereço só o Loader conhece. Isto **revisa a metade-DLL do
+  ADR-004** (a metade-launcher já tinha virado pipe na Fase 4), e o `dll_config.rs` documenta
+  por que — inclusive a honestidade de que, contra quem já controla o processo, isto é defesa
+  em profundidade, não garantia. A garantia forte continua sendo a validação do ticket no
+  servidor.
+- **A ordem inegociável, agora real:** injetar → esperar `HELLO_ACK` → só então
+  `ResumeThread`. Um cliente retomado antes do HELLO_ACK roda sem vigilância, e é a janela que
+  o RSE existe para fechar.
+- **Heartbeat nos dois sentidos.** A DLL bate a cada 5 s; 3 batimentos sem `HEARTBEAT_ACK` e
+  ela derruba o próprio processo (perder o Loader é evento de segurança). O Loader responde
+  os batimentos até o jogo fechar; se a DLL some, ele encerra.
+- **Tolerância no rollout:** `--exigir-dll` desligado por padrão. Enquanto o login-server
+  está em `log`, uma falha de injeção **abre o jogo assim mesmo** e grita no
+  `rse_loader.log`, em vez de trancar o jogador fora. Vira `--exigir-dll` na passagem para
+  `on`.
+
+**Resultados medidos**
+
+| Critério | Obtido |
+|---|---|
+| A DLL compila como cdylib i686 na toolchain travada | ✅ `rse_watchdog.dll`, 1.68.2 |
+| A DLL exporta `rse_configure` (nome limpo) | ✅ conferido no `objdump` |
+| Loader + DLL cross-compilam para Windows | ✅ i686-pc-windows-gnu, release com LTO |
+| Testes do protocolo + DLL | **87** (74 protocolo + 8 vetores + 4 mensagens + 1 doc) |
+| `clippy -- -D warnings` (protocolo + DLL) | limpo |
+| `unsafe` concentrado num arquivo por crate | ✅ `sys.rs` / `injecao.rs` |
+| Injeção testada num processo real | ✅ **provada no cliente real, de primeira** |
+| Matar o Loader encerra o cliente | ✅ **testado:** Loader morto → jogo caiu em ~15 s (3 batimentos) |
+
+**A prova, do `rse_loader.log` real (22/08/2026):**
+
+```
+credencial recebida (124 bytes)
+ticket recebido: 148 bytes, key_id=1, vale por 30000 ms
+injetando ...\rse\rse_watchdog.dll
+rse_watchdog.dll carregada no alvo, base=0x5f0d0000
+HELLO_ACK recebido — a DLL esta viva e o canal cifrado funciona
+Ragexe retomado
+```
+
+Injeção num processo de 32 bits real, handshake AES-256-GCM, e o jogo abrindo na tela de
+login — tudo na primeira execução, sem uma rodada de depuração. Para injeção de DLL, que
+falha por antivírus, ASLR ou arquitetura, isso é notável, não rotineiro.
+
+**Pendência de acabamento (não bloqueia nada):** o `rse_loader.exe` é um app de console, então
+uma janela preta fica visível enquanto o jogo roda (é onde o log aparece — ótimo para testar,
+feio para o jogador). Antes do rollout, compilar o Loader com `#![windows_subsystem =
+"windows"]` para ele não abrir console; o log em arquivo continua valendo.
+
+---
+
+## Fase 5b — netgate (fechar o circuito) 🎯 *o próximo valor real*
+
+É aqui que o RSE **passa a impedir** cliente sem launcher. A DLL intercepta o envio de rede
+do Ragexe e antepõe o packet `0x0AAA` com o ticket (que já chega a ela no HELLO). Quando isto
+funcionar, `rse_enforce: on` no login-server e um Ragexe aberto direto **não conecta**.
+
+- hook de `send`/`WSASend` (IAT ou inline), antepondo o `0x0AAA` uma vez, na conexão de login
+- o ticket já vem no HELLO — sem round-trip no caminho quente
+- confirmar em captura de rede que o packet de login segue **byte a byte** inalterado
+
+## Fase 5c — integridade
+
+- CRC-32 para triagem, SHA-256 para decisão; modos `full`/`header_only`/`sampled`
+- GRF adulterada → `INTEGRITY_GRF_MISMATCH` e recusa
+- violações viajam à DLL→Loader→Auth Service (`/report`), que a Fase 3b já sabe receber
+
+---
+
+## Fase 5 — RSE DLL: integridade e heartbeat *(escopo original, para referência)*
 
 **Entregáveis**
 

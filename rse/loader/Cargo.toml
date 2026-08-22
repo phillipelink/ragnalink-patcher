@@ -1,0 +1,61 @@
+[package]
+name = "rse-loader"
+version = "0.1.0"
+edition = "2018"
+rust-version = "1.68.2"
+description = "RagnaShield Engine — inicia o Ragexe sob protecao"
+publish = false
+
+# O alvo real e i686-pc-windows-msvc: a DLL da Fase 5 precisa ter a MESMA
+# arquitetura do Ragexe, que e 32 bits, e Loader e DLL conversam por named pipe
+# no mesmo nivel de integridade. Compilar o Loader em 64 bits funcionaria para a
+# Fase 4, mas criaria uma diferenca gratuita bem no ponto mais delicado da 5.
+#
+#   cargo build --release --target i686-pc-windows-msvc -p rse-loader
+
+[[bin]]
+name = "rse_loader"
+path = "src/main.rs"
+
+[dependencies]
+# `os-rng` liga a fonte de entropia do sistema (BCryptGenRandom): o Loader gera a
+# K_s e o session_id do canal com a DLL.
+rse-protocol = { path = "../protocol", features = ["os-rng"] }
+
+# reqwest ja esta na arvore do workspace (o launcher usa para baixar patch), e
+# no Windows ele fala TLS pelo schannel - ou seja, respeita o repositorio de
+# certificados e as configuracoes de proxy do sistema, que e o que um executavel
+# distribuido a jogadores precisa fazer.
+#
+# A alternativa seria WinHTTP cru pelo winapi: ~150 linhas de FFI a menos de
+# dependencia e um binario bem menor. Ficou anotado como plano B caso o tamanho
+# do executavel ou falso-positivo de antivirus venha a incomodar - a troca fica
+# contida em auth.rs, atras de duas funcoes.
+reqwest = { version = "0.11", features = ["blocking", "json"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+anyhow = "1.0"
+log = { version = "0.4", features = ["std"] }
+
+[target.'cfg(windows)'.dependencies]
+# Mesma versao que o launcher ja usa - nenhuma aresta nova no grafo.
+# processthreadsapi/handleapi/synchapi: CreateProcessW, ResumeThread, handles.
+# namedpipeapi/fileapi: o pipe de handover com o launcher.
+# securitybaseapi/winnt: a DACL que restringe o pipe ao usuario corrente.
+winapi = { version = "0.3.6", features = [
+    "processthreadsapi",
+    "handleapi",
+    "synchapi",
+    "namedpipeapi",
+    "fileapi",
+    "winbase",
+    "winnt",
+    "errhandlingapi",
+    "minwindef",
+    "securitybaseapi",
+    "shellapi",
+    # A injecao da DLL (Fase 5): escrever na memoria do processo alvo, criar
+    # thread remota, e achar o endereco das funcoes.
+    "memoryapi",
+    "libloaderapi",
+] }

@@ -16,6 +16,8 @@ pub struct PatcherConfiguration {
     pub web: WebConfiguration,
     pub client: ClientConfiguration,
     pub patching: PatchingConfiguration,
+    /// RagnaShield Engine. Ausente = desligado, e o launcher roda como antes.
+    pub rse: Option<RseConfiguration>,
 }
 
 #[derive(Deserialize, Clone)]
@@ -73,6 +75,46 @@ pub struct PatchServerInfo {
 #[derive(Deserialize, Clone)]
 pub struct ClientConfiguration {
     pub default_grf_name: String, // GRF file to patch by default
+}
+
+/// Bloco `rse:` do YAML — o RagnaShield Engine.
+///
+/// # Opcional de proposito
+///
+/// O campo em `PatcherConfiguration` e `Option`: um `RagnaLinK.yml` **sem** este
+/// bloco continua valido e o launcher se comporta exatamente como antes do RSE
+/// existir. Mesmo padrao do `frameless` em `WindowConfiguration`, e pelo mesmo
+/// motivo — configuracao ja distribuida na maquina de jogador nao pode virar
+/// erro de arranque por causa de um campo novo.
+#[derive(Deserialize, Clone)]
+pub struct RseConfiguration {
+    /// Liga a protecao. Com `false`, o caminho e byte a byte o de hoje.
+    pub enabled: bool,
+
+    /// Caminho do `rse_loader.exe`, RELATIVO a pasta do executavel do launcher.
+    ///
+    /// Relativo, nao absoluto, pelo mesmo motivo do `index_url`: o jogador
+    /// instala onde quiser, e caminho absoluto no YAML distribuido so funciona
+    /// na maquina de quem gerou o arquivo.
+    pub loader_path: String,
+
+    /// Base do RSE Auth Service, ex.: `https://ragnalink.com.br/rse/v1`.
+    pub auth_url: String,
+
+    /// O que fazer quando o Auth Service nao responde.
+    ///
+    /// `block` (padrao) nao abre o jogo; `allow` abre sem protecao e registra.
+    /// Decisao de operacao, nao de codigo — ver D5 no ROADMAP. Em piloto,
+    /// `allow` evita que instabilidade do servico impeca todo mundo de jogar.
+    #[serde(default = "rse_bloqueio_padrao")]
+    pub on_service_unavailable: String,
+
+    /// Prazo dos pedidos HTTP ao Auth Service, em milissegundos.
+    pub timeout_ms: Option<u64>,
+}
+
+fn rse_bloqueio_padrao() -> String {
+    "block".to_string()
 }
 
 #[derive(Deserialize, Clone)]

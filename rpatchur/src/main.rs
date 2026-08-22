@@ -2,6 +2,7 @@
 
 mod patcher;
 mod process;
+mod rse;
 mod ui;
 
 use log::LevelFilter;
