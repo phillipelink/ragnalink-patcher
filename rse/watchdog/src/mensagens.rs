@@ -119,6 +119,150 @@ pub fn montar_report(linhas: &[String]) -> Vec<u8> {
     linhas.join("\n").into_bytes()
 }
 
+/// `6040` — o relatório não coube inteiro e parte dele foi descartada.
+///
+/// Severidade **alta**, e não informativa, de propósito: perder achado não é
+/// rotina. Quem lê o log precisa saber que está vendo uma amostra, não o todo.
+const COD_RELATORIO_TRUNCADO: u16 = 6040;
+
+/// Quebra as linhas de um REPORT em lotes que caibam no frame.
+///
+/// # O bug que isto conserta
+///
+/// `montar_report` junta tudo num payload só. O frame tem teto de
+/// `FRAME_MAX_PAYLOAD` (8192 B), e o `seal` **recusa** o que passa disso. O
+/// caminho de erro no `canal.rs` apenas registrava localmente — então um
+/// relatório grande demais **sumia inteiro** a caminho do servidor.
+///
+/// Aconteceu de verdade na primeira varredura da Fase 6.4b: 95 achados, 9335
+/// bytes, `PAYLOAD_TOO_LARGE`, e o servidor não recebeu nem os 95 nem o achado
+/// que interessava, que estava no meio deles.
+///
+/// O modo de falhar é perverso e vale nomear: **era tudo ou nada, e piorava
+/// quanto pior a situação**. Um cliente com 100 arquivos adulterados — o caso
+/// mais grave que existe — geraria o maior relatório, estouraria o teto, e o
+/// servidor veria silêncio. Quanto mais havia para contar, menos chegava.
+///
+/// # As três garantias
+///
+/// 1. **Nada some calado.** Se algo não couber, a última linha diz quantos
+///    ficaram de fora (`6040`), e ela mesma cabe no lote.
+/// 2. **Todo lote cabe.** Nenhum payload devolvido passa de `teto`.
+/// 3. **Linha gigante é cortada, não descartada.** Um `detail` absurdo vira uma
+///    linha truncada com `…` — sinal de que existe algo estranho ali, que é
+///    justamente o que não se quer perder.
+///
+/// `max_lotes` limita quantos frames uma varredura pode gerar: sem ele, uma
+/// máquina com milhares de achados inundaria o pipe a cada 60 s.
+pub fn lotes_de_report(linhas: &[String], teto: usize, max_lotes: usize) -> Vec<Vec<u8>> {
+    if linhas.is_empty() || teto == 0 || max_lotes == 0 {
+        return Vec::new();
+    }
+
+    // Corta o que não cabe nem sozinho numa linha. O `-1` deixa espaço para o
+    // separador que virá depois dela.
+    let cortadas: Vec<String> = linhas
+        .iter()
+        .map(|l| {
+            if l.len() <= teto {
+                l.clone()
+            } else {
+                let mut s = cortar_utf8(l, teto.saturating_sub(3));
+                s.push('…');
+                s
+            }
+        })
+        .collect();
+
+    let mut lotes: Vec<Vec<u8>> = Vec::new();
+    let mut atual: Vec<&str> = Vec::new();
+    let mut tam = 0usize;
+    let mut i = 0usize;
+
+    while i < cortadas.len() {
+        let l = cortadas[i].as_str();
+        // +1 pelo `\n` que separa desta linha da anterior.
+        let custo = if atual.is_empty() { l.len() } else { l.len() + 1 };
+
+        if tam + custo <= teto {
+            tam += custo;
+            atual.push(l);
+            i += 1;
+            continue;
+        }
+
+        // Não coube: fecha o lote atual.
+        lotes.push(atual.join("\n").into_bytes());
+        atual.clear();
+        tam = 0;
+
+        if lotes.len() >= max_lotes {
+            break; // o resto vira aviso, abaixo
+        }
+    }
+
+    if !atual.is_empty() && lotes.len() < max_lotes {
+        lotes.push(atual.join("\n").into_bytes());
+        atual.clear();
+        i = cortadas.len();
+    }
+
+    // Sobrou coisa sem lote? Avisa quantas, dentro do último lote.
+    let de_fora = cortadas.len().saturating_sub(i) + atual.len();
+    if de_fora > 0 {
+        let aviso = format!(
+            "{}|alta|relatorio truncado: {} linha(s) nao couberam",
+            COD_RELATORIO_TRUNCADO, de_fora
+        );
+        encaixar_aviso(&mut lotes, aviso, teto);
+    }
+
+    lotes
+}
+
+/// Põe o aviso no último lote, abrindo espaço se preciso.
+///
+/// Se nem removendo linhas o aviso couber (lote de teto minúsculo), ele vira um
+/// lote próprio — porque a informação "faltou coisa" vale mais do que a última
+/// linha de achado.
+fn encaixar_aviso(lotes: &mut Vec<Vec<u8>>, aviso: String, teto: usize) {
+    if aviso.len() > teto {
+        return; // teto absurdo; nada a fazer sem estourar a garantia 2
+    }
+    if let Some(ultimo) = lotes.last_mut() {
+        while !ultimo.is_empty() && ultimo.len() + 1 + aviso.len() > teto {
+            // Remove a última linha do lote para abrir espaço.
+            match ultimo.iter().rposition(|b| *b == b'\n') {
+                Some(p) => ultimo.truncate(p),
+                None => ultimo.clear(),
+            }
+        }
+        if ultimo.is_empty() {
+            *ultimo = aviso.into_bytes();
+        } else {
+            ultimo.push(b'\n');
+            ultimo.extend_from_slice(aviso.as_bytes());
+        }
+    } else {
+        lotes.push(aviso.into_bytes());
+    }
+}
+
+/// Corta uma string em no máximo `max` bytes sem partir um caractere UTF-8.
+///
+/// Cortar por byte numa string com acento produziria bytes inválidos — e o
+/// `detail` de uma violação frequentemente traz nome de arquivo com acento.
+fn cortar_utf8(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    let mut fim = max;
+    while fim > 0 && !s.is_char_boundary(fim) {
+        fim -= 1;
+    }
+    s[..fim].to_string()
+}
+
 /// Lê o REPORT_ACK: a ação que o servidor decidiu, em texto ("report"/"kill"/…).
 pub fn ler_report_ack(p: &[u8]) -> String {
     String::from_utf8_lossy(p).trim().to_string()
@@ -126,6 +270,153 @@ pub fn ler_report_ack(p: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    // ---- lotes_de_report (o conserto do PAYLOAD_TOO_LARGE) ----------------
+
+    const TETO: usize = 8192;
+
+    fn linhas_falsas(n: usize, tam: usize) -> Vec<String> {
+        (0..n)
+            .map(|i| {
+                let mut s = format!("3003|alta|dono numero {} ", i);
+                while s.len() < tam {
+                    s.push('x');
+                }
+                s.truncate(tam);
+                s
+            })
+            .collect()
+    }
+
+    fn tudo_cabe(lotes: &[Vec<u8>], teto: usize) {
+        for (i, l) in lotes.iter().enumerate() {
+            assert!(
+                l.len() <= teto,
+                "lote {} tem {} bytes, acima do teto {}",
+                i,
+                l.len(),
+                teto
+            );
+        }
+    }
+
+    #[test]
+    fn vazio_nao_gera_lote() {
+        assert!(lotes_de_report(&[], TETO, 4).is_empty());
+    }
+
+    #[test]
+    fn o_que_cabe_vira_um_lote_so() {
+        let v = linhas_falsas(10, 97);
+        let lotes = lotes_de_report(&v, TETO, 4);
+        assert_eq!(lotes.len(), 1);
+        tudo_cabe(&lotes, TETO);
+        let texto = String::from_utf8(lotes[0].clone()).unwrap();
+        assert_eq!(texto.lines().count(), 10);
+    }
+
+    /// O caso REAL que quebrou: 95 achados de ~97 bytes = 9335 bytes.
+    #[test]
+    fn o_caso_de_95_achados_que_estourava_agora_passa() {
+        let v = linhas_falsas(95, 97);
+        let bruto: usize = v.iter().map(|l| l.len()).sum::<usize>() + v.len() - 1;
+        assert!(bruto > TETO, "o cenario precisa estourar: {} bytes", bruto);
+
+        let lotes = lotes_de_report(&v, TETO, 4);
+        tudo_cabe(&lotes, TETO);
+        assert_eq!(lotes.len(), 2, "deve caber em dois frames");
+
+        // NENHUMA linha pode ter sumido.
+        let juntos: Vec<String> = lotes
+            .iter()
+            .flat_map(|l| {
+                String::from_utf8(l.clone())
+                    .unwrap()
+                    .lines()
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        assert_eq!(juntos.len(), 95);
+        for original in &v {
+            assert!(juntos.contains(original), "linha perdida: {}", original);
+        }
+    }
+
+    #[test]
+    fn quando_estoura_o_limite_de_lotes_avisa_quantos_ficaram() {
+        let v = linhas_falsas(1000, 97);
+        let lotes = lotes_de_report(&v, TETO, 2);
+        tudo_cabe(&lotes, TETO);
+        assert_eq!(lotes.len(), 2);
+
+        let ultimo = String::from_utf8(lotes[1].clone()).unwrap();
+        let fim = ultimo.lines().last().unwrap();
+        assert!(
+            fim.starts_with("6040|alta|relatorio truncado:"),
+            "faltou o aviso; ultima linha = {}",
+            fim
+        );
+        // E o numero tem que ser verdade.
+        let entregues: usize = lotes
+            .iter()
+            .map(|l| String::from_utf8(l.clone()).unwrap().lines().count())
+            .sum::<usize>()
+            - 1; // o aviso nao e achado
+        let anunciados: usize = fim
+            .rsplit("truncado: ")
+            .next()
+            .unwrap()
+            .split(' ')
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(
+            entregues + anunciados,
+            1000,
+            "entregues {} + anunciados {} != 1000",
+            entregues,
+            anunciados
+        );
+    }
+
+    #[test]
+    fn linha_gigante_e_cortada_nao_descartada() {
+        let mut gigante = String::from("1000|critica|");
+        while gigante.len() < TETO * 3 {
+            gigante.push('A');
+        }
+        let lotes = lotes_de_report(&[gigante], TETO, 4);
+        tudo_cabe(&lotes, TETO);
+        assert_eq!(lotes.len(), 1);
+        let t = String::from_utf8(lotes[0].clone()).unwrap();
+        assert!(t.starts_with("1000|critica|"), "perdeu o comeco: {}", &t[..40]);
+        assert!(t.ends_with('…'), "faltou a marca de corte");
+    }
+
+    #[test]
+    fn corte_nao_parte_caractere_acentuado() {
+        // 'ç' ocupa 2 bytes; cortar no meio produziria UTF-8 invalido.
+        let mut s = String::from("1002|alta|arquivo coraç");
+        while s.len() < 60 {
+            s.push('ç');
+        }
+        let lotes = lotes_de_report(&[s], 40, 4);
+        tudo_cabe(&lotes, 40);
+        // Se o corte partisse um caractere, o from_utf8 abaixo falharia.
+        let t = String::from_utf8(lotes[0].clone()).expect("corte gerou UTF-8 invalido");
+        assert!(t.ends_with('…'));
+    }
+
+    #[test]
+    fn teto_apertado_ainda_respeita_o_teto() {
+        for teto in [20usize, 50, 120, 300] {
+            let v = linhas_falsas(50, 97);
+            let lotes = lotes_de_report(&v, teto, 3);
+            tudo_cabe(&lotes, teto);
+        }
+    }
+
     use super::*;
 
     #[test]

@@ -59,6 +59,10 @@ advisory-lock = "0.3"
 winapi = { version = "0.3.6", features = [
     "shellapi", "winuser", "windef", "minwindef", "processthreadsapi", "wingdi",
     "namedpipeapi", "fileapi", "handleapi", "errhandlingapi", "winbase", "winnt",
+    # winreg: le o MachineGuid para a impressao de maquina (RSE_SPEC §8).
+    # E so um cfg sobre bindings que o winapi ja tem — nao entra dependencia nova
+    # e o Cargo.lock nao muda.
+    "winreg",
 ] }
 
 [dev-dependencies]

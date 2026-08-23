@@ -42,6 +42,16 @@ winapi = { version = "0.3.6", features = [
     "minwindef",
     "winsock2",
     "ws2def",
-    # Fase 6: IsDebuggerPresent / CheckRemoteDebuggerPresent.
+    # Fase 6.1: IsDebuggerPresent / CheckRemoteDebuggerPresent.
     "debugapi",
+    # Fase 6.2: lista de modulos carregados (Toolhelp) e GetWindowsDirectoryW.
+    "tlhelp32",
+    "sysinfoapi",
+    # Fase 6.3: QueryPerformanceCounter/Frequency, uma das duas fontes de tempo
+    # que a deteccao de speedhack compara. A outra nao precisa de feature: e
+    # leitura direta da KUSER_SHARED_DATA, que nao passa por funcao nenhuma.
+    "profileapi",
+    # Fase 6.5: VirtualQuery (conferir se a pagina e legivel antes de ler) e
+    # GetModuleHandleExW (descobrir a base da propria DLL pelo endereco).
+    "memoryapi",
 ] }

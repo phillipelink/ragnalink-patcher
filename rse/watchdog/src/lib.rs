@@ -27,13 +27,28 @@
 #![cfg_attr(not(windows), allow(dead_code))]
 
 mod mensagens;
+// Declarado sem `cfg`: a parte que decide o que é suspeito é pura, e os testes
+// dela rodam em qualquer máquina. Só o pedaço que fala com o Toolhelp é
+// `#[cfg(windows)]`, lá dentro.
+mod modulos;
+
+// Sem `cfg`: a decisão (o que mudou entre duas fotos) é pura e testável; só a
+// leitura da memória e a travessia do PE precisam do Windows.
+mod codigo;
 
 #[cfg(windows)]
 mod canal;
 #[cfg(windows)]
 mod deteccoes;
 #[cfg(windows)]
+mod handles;
+#[cfg(windows)]
 mod integridade;
+#[cfg(windows)]
+mod processos;
+// Sem `cfg`: a decisão (comparar dois relógios) é pura e testável em qualquer
+// máquina; só as leituras são de Windows. Ver o cabeçalho do arquivo.
+mod relogio;
 #[cfg(windows)]
 mod netgate;
 #[cfg(windows)]
@@ -128,5 +143,95 @@ mod dll {
             // seguranca: o cliente nao pode continuar sem vigilancia.
             Err(_) => sys::matar_o_proprio_processo(),
         }
+    }
+}
+
+// ===========================================================================
+//  Guarda contra colisão de código de violação
+// ===========================================================================
+
+/// Duas colisões de código aconteceram na Fase 6, e **as duas foram pegas por
+/// acaso** — uma porque fui conferir o spec, outra porque um arquivo faltando
+/// obrigou a olhar o crate inteiro. Nenhuma das duas teria quebrado a
+/// compilação, e é isso que as torna perigosas: o sintoma é um log ambíguo,
+/// meses depois, na hora em que ele mais importa.
+///
+/// Este teste lê os próprios fontes e falha se dois `const COD_*` diferentes
+/// apontarem para o mesmo número. É um teste sobre o código-fonte, não sobre o
+/// comportamento — feio, e o único jeito de pegar isto, já que as constantes são
+/// privadas de cada módulo e nunca se encontram em lugar nenhum em tempo de
+/// compilação.
+#[cfg(test)]
+mod codigos {
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn nenhum_codigo_de_violacao_colide() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src");
+        let mut por_numero: BTreeMap<u16, Vec<String>> = BTreeMap::new();
+
+        let entradas = std::fs::read_dir(dir).expect("nao consegui ler src/");
+        for e in entradas {
+            let caminho = e.expect("entrada invalida").path();
+            if caminho.extension().and_then(|s| s.to_str()) != Some("rs") {
+                continue;
+            }
+            let arquivo = caminho
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("?")
+                .to_string();
+            let texto = std::fs::read_to_string(&caminho).expect("nao consegui ler o arquivo");
+
+            for linha in texto.lines() {
+                let t = linha.trim();
+                if !t.starts_with("const COD_") {
+                    continue;
+                }
+                // const COD_ALGUMA_COISA: u16 = 1234;
+                let (nome, resto) = match t.split_once(':') {
+                    Some(p) => p,
+                    None => continue,
+                };
+                let valor = match resto.split('=').nth(1) {
+                    Some(v) => v,
+                    None => continue,
+                };
+                let numero: u16 = match valor
+                    .trim()
+                    .trim_end_matches(';')
+                    .split_whitespace()
+                    .next()
+                    .and_then(|n| n.trim_end_matches(';').parse().ok())
+                {
+                    Some(n) => n,
+                    None => continue,
+                };
+                let nome = nome.trim_start_matches("const ").trim().to_string();
+                por_numero
+                    .entry(numero)
+                    .or_default()
+                    .push(format!("{} ({})", nome, arquivo));
+            }
+        }
+
+        assert!(
+            !por_numero.is_empty(),
+            "nao achei nenhum `const COD_*` — o teste parou de enxergar os fontes, \
+             o que e pior do que uma colisao: ele passaria para sempre sem olhar nada"
+        );
+
+        let colisoes: Vec<String> = por_numero
+            .iter()
+            .filter(|(_, donos)| donos.len() > 1)
+            .map(|(n, donos)| format!("  {} <- {}", n, donos.join("  E  ")))
+            .collect();
+
+        assert!(
+            colisoes.is_empty(),
+            "codigo de violacao usado por mais de um lugar:\n{}\n\n\
+             Consulte rse/docs/CODIGOS.md e o RSE_SPEC §9 antes de escolher um numero.",
+            colisoes.join("\n")
+        );
     }
 }

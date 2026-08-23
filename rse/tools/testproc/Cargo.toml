@@ -1,0 +1,21 @@
+[package]
+name = "rse-testproc"
+version = "0.1.0"
+edition = "2018"
+rust-version = "1.68.2"
+description = "RagnaShield Engine — finge ser um processo proibido, para exercitar a deteccao 3000"
+publish = false
+
+# Ferramenta de TESTE, nao vai para jogador nenhum. Existe para provar que a
+# deteccao de processos proibidos funciona SEM precisar baixar o Cheat Engine
+# de verdade — a deteccao olha so o nome do executavel, entao um programa
+# inocente com o nome certo aciona exatamente o mesmo caminho.
+#
+#   cargo run -p rse-testproc
+#   cargo run -p rse-testproc -- 45       (segundos no ar)
+#
+# Sem dependencias: so std. Nao precisa nem de winapi.
+
+[[bin]]
+name = "rse-testproc"
+path = "src/main.rs"

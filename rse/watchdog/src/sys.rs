@@ -559,6 +559,24 @@ fn ler_cstr(addr: usize) -> String {
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
+/// Teto do `rse_watchdog.log`: 1 MB, o mesmo do log do Loader.
+///
+/// # Por que precisa de teto
+///
+/// O log abre em **append** — de propósito, para dois clientes na mesma pasta
+/// não truncarem um ao outro. Sem rotação, porém, "append para sempre" é
+/// literal: o arquivo só cresce, na pasta de quem joga todo dia.
+///
+/// Não é hipótese. Uma tarde de testes acumulou 2.199 linhas de 22 sessões, e
+/// cada sessão hoje escreve mais do que antes: a linha de base da 6.4b sozinha
+/// registra uma linha por dono de handle. Numa máquina movimentada isso passa
+/// de 100 linhas por partida.
+///
+/// O log existe para responder "o que aconteceu na sessão que deu problema?" —
+/// e para isso o último megabyte basta. Histórico de meses não serve a ninguém
+/// e ocupa disco do jogador.
+const LIMITE_LOG: u64 = 1_000_000;
+
 /// Log proprio da DLL, num arquivo ao lado do jogo.
 ///
 /// A DLL nao tem o arquivo de log do Loader. Este e o unico jeito de responder
@@ -567,6 +585,16 @@ fn ler_cstr(addr: usize) -> String {
 pub fn log_dll(msg: &str) {
     use std::io::Write;
     let caminho = caminho_do_log();
+
+    // Rotação simples por tamanho, igual à do Loader. Se dois clientes fizerem
+    // isto ao mesmo tempo, o pior caso é truncar duas vezes — mesmo resultado.
+    if std::fs::metadata(&caminho)
+        .map(|m| m.len() > LIMITE_LOG)
+        .unwrap_or(false)
+    {
+        let _ = std::fs::write(&caminho, b"");
+    }
+
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&caminho) {
         let _ = writeln!(f, "[watchdog] {}", msg);
     }

@@ -1,0 +1,26 @@
+[package]
+name = "rse-whoholds"
+version = "0.1.0"
+edition = "2018"
+rust-version = "1.68.2"
+description = "RagnaShield Engine — segunda opiniao: quem segura handle para um PID, em 32 e em 64 bits"
+publish = false
+
+# Ferramenta de DIAGNOSTICO. Existe para responder uma pergunta que a DLL sozinha
+# nao consegue: a lista que ela reporta esta certa?
+#
+# Mesmo algoritmo da 6.4b, compilavel nas duas arquiteturas. Rodar as duas contra
+# o mesmo PID e comparar isola o efeito do WOW64.
+#
+#   cargo run -p rse-whoholds --target x86_64-pc-windows-msvc -- <pid>
+#   cargo run -p rse-whoholds --target i686-pc-windows-msvc   -- <pid>
+
+[[bin]]
+name = "rse-whoholds"
+path = "src/main.rs"
+
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3.6", features = [
+    "processthreadsapi", "tlhelp32", "handleapi", "libloaderapi",
+    "errhandlingapi", "minwindef", "winnt",
+] }

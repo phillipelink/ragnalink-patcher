@@ -48,6 +48,7 @@
 use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
 
+mod acao;
 mod auth;
 #[cfg(windows)]
 mod bandeja;
@@ -518,7 +519,11 @@ fn avisar_limite(max: u32) {
 #[cfg(windows)]
 const MB_ICONINFORMATION: u32 = 0x0000_0040;
 #[cfg(windows)]
-const MB_ICONERROR: u32 = 0x0000_0010;
+pub(crate) const MB_ICONERROR: u32 = 0x0000_0010;
+/// Triângulo de aviso — usado pela ação `avisar` do servidor, que explica sem
+/// derrubar o jogador. Ver `acao.rs`.
+#[cfg(windows)]
+pub(crate) const MB_ICONWARNING: u32 = 0x0000_0030;
 
 /// Mostra uma caixa de mensagem para o jogador.
 ///
@@ -527,7 +532,7 @@ const MB_ICONERROR: u32 = 0x0000_0010;
 /// é o mesmo que não avisar — o jogador clicaria em JOGAR de novo achando que
 /// nada aconteceu.
 #[cfg(windows)]
-fn caixa(mensagem: &str, icone: u32) {
+pub(crate) fn caixa(mensagem: &str, icone: u32) {
     use std::os::windows::ffi::OsStrExt;
     fn wide(s: &str) -> Vec<u16> {
         std::ffi::OsStr::new(s)
@@ -537,14 +542,26 @@ fn caixa(mensagem: &str, icone: u32) {
     }
     let texto = wide(mensagem);
     let titulo = wide("RagnaShield Engine");
+    /// Fica acima das outras janelas.
     const MB_TOPMOST: u32 = 0x0004_0000;
+    /// Pede o primeiro plano ao mostrar.
+    ///
+    /// 🚨 **Pedir não é conseguir.** O Windows só deixa o processo que JÁ tem o
+    /// primeiro plano cedê-lo a outro; o Loader é um processo de fundo, e o jogo
+    /// é quem está na frente. Então a caixa aparece atrás do cliente e o jogador
+    /// só a vê pela barra de tarefas — foi exatamente o que aconteceu no teste.
+    ///
+    /// Esta flag é o pedido correto e custa nada, mas **não é a solução**: para
+    /// o `matar`, a solução é encerrar o jogo primeiro, e aí não há mais janela
+    /// para cobrir a caixa. Ver `acao.rs`.
+    const MB_SETFOREGROUND: u32 = 0x0001_0000;
     // SAFETY: as duas strings terminam em NUL e vivem até o fim da chamada.
     unsafe {
         winapi::um::winuser::MessageBoxW(
             std::ptr::null_mut(),
             texto.as_ptr(),
             titulo.as_ptr(),
-            icone | MB_TOPMOST,
+            icone | MB_TOPMOST | MB_SETFOREGROUND,
         );
     }
 }

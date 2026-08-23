@@ -1709,10 +1709,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "rse-testhandle"
+version = "0.1.0"
+dependencies = [
+ "winapi 0.3.9",
+]
+
+[[package]]
+name = "rse-testpatch"
+version = "0.1.0"
+dependencies = [
+ "winapi 0.3.9",
+]
+
+[[package]]
+name = "rse-testproc"
+version = "0.1.0"
+
+[[package]]
 name = "rse-watchdog"
 version = "0.1.0"
 dependencies = [
  "rse-protocol",
+ "winapi 0.3.9",
+]
+
+[[package]]
+name = "rse-whoholds"
+version = "0.1.0"
+dependencies = [
  "winapi 0.3.9",
 ]
 

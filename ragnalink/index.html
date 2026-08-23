@@ -57,6 +57,27 @@
   #fundo { position:absolute; left:0; top:0; width:1200px; height:800px;
     background:url('fundo.png') no-repeat 0 0; }
 
+  /* ---------------- aviso da primeira execucao ---------------- */
+  /* Cobre a janela inteira e fica ACIMA de tudo. Nao e decoracao: e o unico
+     momento em que a pessoa ve, no proprio cliente, o que a protecao envia.
+     A pagina do site tem o texto completo; aqui vai o resumo e o link. */
+  #capaAviso { position:absolute; left:0; top:0; width:1200px; height:800px;
+    background:rgba(4,9,18,.86); z-index:9000; display:none; }
+  #cartaoAviso { position:absolute; left:190px; top:170px; width:600px;
+    background:#0d1826; border:1px solid rgba(70,120,165,.55);
+    border-radius:14px; padding:26px 30px 22px;
+    box-shadow:0 18px 50px rgba(0,0,0,.55); }
+  #cartaoAviso h2 { margin:0 0 4px; font-size:21px; color:#eaf2ff; font-weight:700; }
+  #cartaoAviso .sub { margin:0 0 16px; font-size:13px; color:#7d93ab; }
+  #cartaoAviso p { margin:0 0 12px; font-size:14px; line-height:1.5; color:#c8d8ea; }
+  #cartaoAviso b { color:#eaf2ff; }
+  #cartaoAviso .lnk { color:#4fc3f7; text-decoration:underline; cursor:pointer; }
+  #cartaoAviso .lnk:hover { color:#8ed6ff; }
+  #btAviso { display:inline-block; margin-top:6px; padding:10px 26px;
+    background:#0098ea; color:#fff; font-size:15px; font-weight:600;
+    border-radius:8px; cursor:pointer; }
+  #btAviso:hover { background:#22aef7; }
+
   /* ---------------- controles de janela ---------------- */
   /* Os simbolos ja estao PINTADOS na arte (minimizar em 820..831 e fechar em
      850..859, na altura 32..41). Aqui so a area clicavel e o realce. */
@@ -146,6 +167,14 @@
   #estado { position:absolute; left:193px; top:612px; width:555px;
     font-size:17px; font-weight:600; color:#eaf2ff;
     white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  /* Estado de PARADA (bloqueado / falha da protecao): a barra de progresso nao
+     tem o que informar, entao o espaco dela vai para a mensagem.
+     555px numa linha de 17px bold cabem ~62 caracteres, e a mensagem do
+     servidor e maior que isso - o jogador via "...neste..." e nao ficava
+     sabendo por quanto tempo estava barrado, que e a unica parte que muda o que
+     ele faz a seguir. Duas linhas ocupam 612..656, e o #detalhes so comeca em
+     664: cabe dentro do painel util (604..688) sem empurrar nada. */
+  #estado.parado { white-space:normal; line-height:1.28; max-height:46px; }
   #trilho { position:absolute; left:193px; top:640px; width:555px; height:19px;
     background:#0b1521; border-radius:9px; overflow:hidden;
     border:1px solid rgba(70,120,165,.5); }
@@ -158,6 +187,12 @@
     font-size:14px; color:#8ea3ba;
     white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   #detalhes b { color:#cfe0f2; font-weight:600; }
+  /* Link dentro da linha de detalhes. NAO e <a href> - ver o aviso junto de
+     abrir(): link normal navegaria a PROPRIA janela do patcher, e o jogador
+     perderia a tela e o botao Jogar sem ter barra de navegador para voltar.
+     E um <span> que chama open_url, que abre no navegador do sistema. */
+  #detalhes .lnk { color:#4fc3f7; text-decoration:underline; cursor:pointer; }
+  #detalhes .lnk:hover { color:#8ed6ff; }
 
   /* ---------------- botoes ---------------- */
   /* Todos ja estao PINTADOS. Estes retangulos sao a area clicavel e os estados,
@@ -209,6 +244,29 @@
 
 <div id="lista"></div>
 <div id="verTodas" onmousedown="pararAqui(event)" onclick="abrir('/noticias')" title="Ver todas as notícias no site"></div>
+
+<div id="capaAviso" onmousedown="pararAqui(event)">
+  <div id="cartaoAviso">
+    <h2>Proteção RagnaShield</h2>
+    <p class="sub">Leia uma vez — não vamos mostrar de novo.</p>
+    <p>
+      O RagnaLinK usa uma proteção contra trapaças que funciona
+      <b>apenas enquanto o jogo está aberto</b>. Ela confere se os arquivos do
+      jogo estão íntegros e se algo está interferindo neles.
+    </p>
+    <p>
+      Envia ao servidor um <b>identificador embaralhado do seu computador</b> e o
+      registro do que for identificado. <b>Nunca</b> envia arquivos seus, o que
+      você digita, ou identificadores da sua máquina em forma legível.
+    </p>
+    <p>
+      Detalhes no
+      <span class="lnk" onmousedown="pararAqui(event)" onclick="abrir('/privacidade')"
+            title="Abrir o Aviso de Privacidade no navegador">Aviso de Privacidade</span>.
+    </p>
+    <div id="btAviso" onmousedown="pararAqui(event)" onclick="fecharAviso()">Entendi</div>
+  </div>
+</div>
 
 <div id="estado">Verificando atualizações...</div>
 <div id="trilho"><div id="barra"></div></div>
@@ -282,13 +340,33 @@ document.onkeydown = function (e) {
 };
 
 function id(x) { return document.getElementById(x); }
-function texto(t) { id('estado').innerHTML = t; }
+function texto(t) {
+  id('estado').className = '';
+  id('trilho').style.display = '';
+  id('estado').innerHTML = t;
+}
+
+/* Mensagem de PARADA: some com a barra e deixa o texto usar duas linhas.
+   Existe separada de texto() de proposito - assim qualquer chamada normal a
+   texto() devolve a tela ao normal sozinha, e ninguem precisa lembrar de
+   desfazer. */
+function textoParado(t) {
+  id('trilho').style.display = 'none';
+  id('estado').className = 'parado';
+  id('estado').innerHTML = t;
+}
 
 function progresso(p, classe) {
   if (p < 0) { p = 0; } if (p > 100) { p = 100; }
   id('barra').style.width = p + '%';
   id('barra').className = classe || '';
-  id('pct').innerHTML = p > 0 ? (p + '%') : '';
+  /* 🚨 Em erro NAO sai porcentagem. Os tres caminhos de falha chamavam
+     progresso(100,'erro') so para encher a barra de vermelho, e isso escrevia
+     um "100%" gigante em ciano ao lado de "Acesso bloqueado". Numero de
+     progresso ao lado de mensagem de bloqueio se le como "deu certo" - a cor da
+     barra dizia uma coisa e o numero dizia outra.
+     Porcentagem significa progresso; erro nao e progresso. */
+  id('pct').innerHTML = (classe === 'erro' || p <= 0) ? '' : (p + '%');
 }
 
 function detalhes(t) { id('detalhes').innerHTML = t || ''; }
@@ -352,6 +430,16 @@ function notificationInProgress() { texto('Atualização já está em andamento.
 /* RagnaShield Engine (RSE) - o launcher chama estas por eval, com guarda */
 /* `typeof` do lado dele. Aqui elas so precisam EXISTIR. Nao renomear.    */
 /* ==================================================================== */
+/* Monta o link de suporte para a linha de detalhes.
+   O caminho passa por abrir(), e nao por um endereco escrito inteiro, para
+   seguir a mesma base (SITE) dos outros botoes da tela: se o dominio mudar,
+   muda num lugar so. */
+function linkSuporte(rotulo) {
+  return '<span class="lnk" onmousedown="pararAqui(event)" ' +
+         'onclick="abrir(\'/fale-conosco\')" title="Abrir o Fale Conosco no navegador">' +
+         rotulo + '</span>';
+}
+
 function rseStatus(fase) {
   if (fase === 'iniciando') {
     texto('Iniciando proteção RagnaShield...');
@@ -363,16 +451,56 @@ function rseStatus(fase) {
 }
 function rseErro(msg) {
   progresso(100, 'erro');
-  texto('Proteção falhou: ' + msg);
-  detalhes('Tente de novo. Se persistir, envie o código ao suporte (Ctrl+Shift+D gera outro).');
+  textoParado('Proteção falhou: ' + msg);
+  detalhes('Tente de novo. Se persistir, ' + linkSuporte('fale com o suporte') +
+           ' (Ctrl+Shift+D gera o código).');
   liberar(true);   /* deixa tentar de novo: pode ser so o Auth Service instavel */
 }
 function rseBloqueado(msg) {
   progresso(100, 'erro');
-  texto('Acesso bloqueado: ' + msg);
-  detalhes('Fale com o suporte se achar que é engano.');
+  textoParado('Acesso bloqueado: ' + msg);
+  /* O "fale com o suporte" so serve se der para chegar la. Quem foi barrado por
+     engano esta na pior hora possivel para ir procurar o canal de contato no
+     site. Um clique resolve. */
+  detalhes('Se achar que é engano, ' + linkSuporte('fale com o suporte') + '.');
   liberar(false);  /* banimento nao se resolve tentando de novo */
 }
+/* ---- aviso da primeira execucao -------------------------------------------
+   A VERSAO mora aqui, e e a mesma string de DocumentosLegais.Versao no site.
+   Ao publicar um aviso novo, mude nos dois: o cliente volta a mostrar a tela,
+   e o site volta a pedir o aceite no cadastro.
+
+   O Rust nao decide nada — ele so guarda e devolve esta string (ver
+   handle_aviso_estado / handle_aviso_visto em ui.rs). Toda a logica esta aqui,
+   que e o arquivo facil de trocar por patch. */
+var VERSAO_AVISO = '2026-08-23';
+var esperandoAviso = null;
+
+/* Chamado pelo Rust com a versao ja aceita, ou vazio. */
+function avisoEstado(versao) {
+  if (esperandoAviso) { clearTimeout(esperandoAviso); esperandoAviso = null; }
+  if (versao !== VERSAO_AVISO) { id('capaAviso').style.display = 'block'; }
+}
+
+function fecharAviso() {
+  id('capaAviso').style.display = 'none';
+  chamarJson('aviso_visto', { versao: VERSAO_AVISO });
+}
+
+/* 🚨 Na duvida, MOSTRAR.
+   Se a resposta nao vier — pagina aberta fora do patcher, versao antiga do
+   launcher sem o handler, bridge com problema — o certo e exibir. O custo de
+   mostrar de novo para quem ja viu e um clique; o custo de nunca mostrar e a
+   pessoa nunca ser informada, que e justamente o que esta tela existe para
+   evitar. */
+function perguntarSobreAviso() {
+  esperandoAviso = setTimeout(function () {
+    esperandoAviso = null;
+    id('capaAviso').style.display = 'block';
+  }, 1200);
+  chamar('aviso_estado');
+}
+
 /* ---- limite de clientes por computador ------------------------------------
    O numero NAO fica escrito aqui de proposito: ele vem do /rse/v1/policy, que e
    a mesma fonte que o Loader obedece. Assim mudar o limite no servidor muda o
@@ -572,6 +700,11 @@ setTimeout(function () {
    recortada, que pisca feio na abertura. */
 chamar('ajustar_janela');
 chamar('moldar_janela');
+
+/* Antes do start_update: a atualizacao pode demorar, e o aviso tem que estar na
+   frente quando a pessoa olhar a tela pela primeira vez. Ele nao trava nada — o
+   patch continua acontecendo por tras. */
+perguntarSobreAviso();
 
 texto('Verificando atualizações...');
 chamar('start_update');

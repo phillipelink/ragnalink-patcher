@@ -92,7 +92,18 @@ pub struct CanalDll {
     auth_url: String,
     credencial: String,
     client_hash: String,
+    /// Handle do processo do jogo, para o caso de o servidor mandar encerrar.
+    ///
+    /// Emprestado, não transferido: quem fecha o handle continua sendo o
+    /// `ProcessoFilho` do `main`. Guardar uma cópia aqui é o que permite ao
+    /// Loader agir sobre o jogo **de fora** — a DLL não poderia encerrar a si
+    /// mesma sem deixar o Loader achando que a sessão continua.
+    jogo: HANDLE,
 }
+
+// SAFETY: `HANDLE` é um valor opaco válido em todo o processo; o `CanalDll` vive
+// numa thread só e não duplica nem fecha o handle.
+unsafe impl Send for CanalDll {}
 
 /// Injeta a DLL, faz o handshake, e devolve o canal pronto para o heartbeat.
 ///
@@ -157,6 +168,10 @@ pub fn injetar_e_apertar_mao(
 
     // 8. handshake.
     let (l2d, d2l) = rse_protocol::crypto::derive_channel_keys(&session_key, &sid);
+    // Guardado antes de o `alvo` ser consumido pela injeção: é este handle que
+    // permite encerrar o jogo se o servidor mandar (ver `Acao::Matar`).
+    let alvo_handle = alvo.0;
+
     let mut sealer = Sealer::new(&l2d, Direction::LoaderToDll);
     let mut opener = Opener::new(&d2l, Direction::DllToLoader);
 
@@ -170,10 +185,31 @@ pub fn injetar_e_apertar_mao(
         auth_url: auth_url.to_string(),
         credencial: credencial.to_string(),
         client_hash: client_hash.to_string(),
+        jogo: alvo_handle,
     })
 }
 
 impl CanalDll {
+    /// Encerra o processo do jogo, por decisão do servidor.
+    ///
+    /// `TerminateProcess` e não um pedido educado: quem chegou aqui está com o
+    /// cliente adulterado ou com um programa de trapaça ativo, e pedir para
+    /// fechar dependeria de o cliente cooperar — justamente o que não se pode
+    /// supor. O jogador já viu a caixa explicando quando esta função é chamada.
+    #[cfg(windows)]
+    fn encerrar_o_jogo(&self) {
+        use winapi::um::processthreadsapi::TerminateProcess;
+        // SAFETY: handle do processo que o Loader criou, ainda vivo nesta
+        // função — o `ProcessoFilho` do `main` só o fecha depois do heartbeat.
+        let ok = unsafe { TerminateProcess(self.jogo, 1) };
+        if ok == 0 {
+            log::warn!("TerminateProcess falhou; o cliente pode continuar aberto");
+        }
+    }
+
+    #[cfg(not(windows))]
+    fn encerrar_o_jogo(&self) {}
+
     /// Responde heartbeats até o jogo fechar ou a DLL sumir.
     ///
     /// Bloqueia. Roda depois do `ResumeThread`, na thread principal do Loader —
@@ -280,12 +316,18 @@ impl CanalDll {
                 log::info!("a DLL pediu shutdown");
                 return Ok(());
             } else if frame.opcode_raw == Opcode::Report.as_u8() {
-                // Fase 5c: a DLL reportou violação(ões). Repassamos ao Auth
-                // Service e devolvemos a ação (REPORT_ACK). Em modo report a ação
-                // vem "report" e ninguém é morto — é telemetria. Agir sobre
-                // "kill" fica para o 5c-2, quando houver mismatch real de manifesto.
+                // A DLL reportou violação(ões). Repassamos ao Auth Service, que
+                // decide a ação, e então **obedecemos** — que é o que faltava.
+                //
+                // 🚨 Quem age é o Loader, não a DLL, e não é por gosto: quem tem
+                // o handle do processo do jogo é ele. A DLL mora dentro do
+                // processo; encerrar a si mesma deixaria o Loader vivo achando
+                // que a sessão continua, e o jogador sem explicação. O Loader
+                // mata de fora, com a caixa na tela antes.
                 let violacoes = parse_report(&frame.payload);
-                let acao = match auth::reportar(&self.auth_url, &self.credencial, &violacoes) {
+                let codigos: Vec<u32> = violacoes.iter().map(|v| v.code).collect();
+
+                let texto = match auth::reportar(&self.auth_url, &self.credencial, &violacoes) {
                     Ok(a) => {
                         log::info!(
                             "{} violacao(oes) reportada(s); Auth Service respondeu acao={}",
@@ -295,17 +337,52 @@ impl CanalDll {
                         a
                     }
                     Err(e) => {
+                        // Servidor inalcançável NÃO vira ação contra o jogador.
+                        // A mesma regra do kill-switch: agir exige um "sim"
+                        // explícito de um serviço no ar, nunca a inferência de
+                        // uma queda de rede.
                         log::warn!("nao consegui reportar ao Auth Service: {:#}", e);
                         "report".to_string()
                     }
                 };
+                let acao = crate::acao::Acao::ler(&texto);
+
+                // O REPORT_ACK sai ANTES de agir: a DLL registra a decisão no
+                // log dela, e esse log é o que vai para o suporte. Matar antes
+                // de responder deixaria o rastro pela metade justamente no caso
+                // que mais precisa de rastro.
                 let ack = self
                     .sealer
-                    .seal(Opcode::ReportAck, acao.as_bytes())
+                    .seal(Opcode::ReportAck, acao.como_texto().as_bytes())
                     .map_err(|e| anyhow!("cifrando REPORT_ACK: {}", e))?;
                 if self.pipe.escrever(&ack).is_err() {
                     log::info!("nao consegui responder REPORT_ACK; a DLL sumiu");
                     return Ok(());
+                }
+
+                if acao.incomoda() {
+                    log::warn!(
+                        "acao={} para os codigos {:?}",
+                        acao.como_texto(),
+                        codigos
+                    );
+                    if crate::acao::aplicar(acao, &codigos) {
+                        // 🚨 ENCERRA PRIMEIRO, EXPLICA DEPOIS.
+                        //
+                        // A ordem inversa foi testada em campo e falhou duas
+                        // vezes: a caixa abria atrás do jogo (o Loader não rouba
+                        // o primeiro plano do cliente), e quem não clicasse
+                        // continuava jogando — porque o `MessageBox` bloqueia e
+                        // o encerramento só vinha depois do clique.
+                        //
+                        // Assim a ação é imediata e a caixa fica visível, já que
+                        // não há mais janela do cliente por cima. A caixa é do
+                        // Loader, que continua vivo depois de matar o jogo.
+                        log::warn!("encerrando o cliente por decisao do servidor");
+                        self.encerrar_o_jogo();
+                        crate::acao::explicar_apos_encerrar(acao, &codigos);
+                        return Ok(());
+                    }
                 }
             }
         }

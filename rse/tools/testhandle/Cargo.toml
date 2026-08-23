@@ -1,0 +1,30 @@
+[package]
+name = "rse-testhandle"
+version = "0.1.0"
+edition = "2018"
+rust-version = "1.68.2"
+description = "RagnaShield Engine — abre um handle de escrita no cliente, para exercitar a deteccao 3003"
+publish = false
+
+# Ferramenta de TESTE, nao vai para jogador nenhum.
+#
+# O ponto dela: o executavel se chama `rse-testhandle.exe`, nome que nao esta em
+# lista de proibidos nenhuma. A 6.4 (nomes) nao o ve. A 6.4b (handles) ve — que
+# e exatamente a diferenca entre as duas, e a razao de a 6.4b existir.
+#
+#   cargo run -p rse-testhandle
+#   cargo run -p rse-testhandle -- 60     (segundos segurando o handle)
+
+[[bin]]
+name = "rse-testhandle"
+path = "src/main.rs"
+
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3.6", features = [
+    "processthreadsapi",
+    "tlhelp32",
+    "handleapi",
+    "errhandlingapi",
+    "minwindef",
+    "winnt",
+] }

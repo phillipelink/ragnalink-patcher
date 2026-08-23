@@ -1,0 +1,25 @@
+[package]
+name = "rse-testpatch"
+version = "0.1.0"
+edition = "2018"
+rust-version = "1.68.2"
+description = "RagnaShield Engine — remenda um byte do codigo do jogo, para exercitar a deteccao 3002"
+publish = false
+
+# Ferramenta de TESTE, nao vai para jogador nenhum.
+#
+# Escreve UM byte numa area de preenchimento entre funcoes (0xCC/0x90, que nunca
+# sao executadas) e restaura no fim. Prova a 6.5 sem risco de derrubar o jogo.
+#
+#   cargo run -p rse-testpatch
+#   cargo run -p rse-testpatch -- 45
+
+[[bin]]
+name = "rse-testpatch"
+path = "src/main.rs"
+
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3.6", features = [
+    "processthreadsapi", "memoryapi", "tlhelp32", "handleapi",
+    "errhandlingapi", "minwindef", "winnt",
+] }

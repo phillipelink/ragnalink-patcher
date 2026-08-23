@@ -214,7 +214,7 @@ fn abrir_sessao(cfg: &RseConfiguration) -> Result<ResultadoSessao> {
     let corpo = serde_json::json!({
         "protocol": rse_protocol::version::RSE_PROTOCOL,
         "launcherBuild": build_do_launcher(),
-        "machineHint": "0".repeat(64),
+        "machineHint": maquina::impressao(),
         "lastPatchIndex": 0,
         "osVersion": std::env::consts::OS,
     });
@@ -334,6 +334,260 @@ fn fim_do_arquivo(caminho: &std::path::Path, n: usize) -> String {
             linhas[inicio..].join("\n")
         }
         Err(e) => format!("(sem {}: {})", caminho.display(), e),
+    }
+}
+
+// ===========================================================================
+//  Impressao de maquina
+// ===========================================================================
+
+/// O `machine_hint` que vai no `POST /session`.
+///
+/// # Por que isto existe (e por que quase custou caro)
+///
+/// Ate agosto/2026 esta funcao nao existia: o launcher mandava `"0" * 64` fixo,
+/// porque **nada dependia da impressao ainda**. O campo estava no protocolo desde
+/// a Fase 2, atravessava o ticket, e ninguem olhava para ele.
+///
+/// Quando a espera por maquina entrou (a consequencia do `kill`), esse zero
+/// virou uma bomba: como todos os jogadores mandavam a MESMA impressao, todos
+/// ficavam com a MESMA `machine_fp` no servidor — e uma unica deteccao num unico
+/// jogador poria o servidor inteiro de castigo. Um trapaceiro derrubaria o
+/// servidor de proposito em trinta segundos.
+///
+/// O servidor tem um fusivel para isso (reconhece a impressao coringa e se recusa
+/// a aplicar espera sobre ela). Esta funcao e o outro lado: enquanto o jogador
+/// estiver com launcher que manda zero, a espera nao vale para ele.
+///
+/// # O que entra no hash — e por que exatamente isto
+///
+/// A formula esta no **RSE_SPEC §8** e nao foi inventada aqui:
+///
+/// ```text
+/// machine_fp = SHA-256( pepper_do_servidor || volume_serial || machine_guid || cpu_id )
+/// ```
+///
+/// Este lado calcula `SHA-256(volume_serial || machine_guid || cpu_id)`; o pepper
+/// entra no servidor, onde ele mora.
+///
+/// | Fonte | O que e | Estabilidade |
+/// |---|---|---|
+/// | `volume_serial` | numero sorteado na formatacao do disco do sistema | muda ao formatar |
+/// | `machine_guid`  | GUID que o Windows gera na instalacao | muda ao reinstalar o Windows |
+/// | `cpu_id`        | fabricante + familia/modelo do processador | muda ao trocar de CPU |
+///
+/// O `cpu_id` identifica o **modelo**, nao a peca: milhares de jogadores com o
+/// mesmo processador contribuem com os mesmos bytes. Ele entra para desempatar
+/// duas maquinas que por acaso coincidissem nas outras fontes, nao como
+/// identidade.
+///
+/// O que o spec **proibe** e respeitado aqui: nada de MAC de placa de rede (muda
+/// com VPN, Wi-Fi x cabo, dock USB) e nada de nome de usuario do Windows. A
+/// espera e por MAQUINA — num PC de familia ela pega a casa, e essa e a semantica
+/// pretendida, nao um efeito colateral.
+///
+/// # Privacidade (RSE_SPEC §8)
+///
+/// O que sai da maquina do jogador e **so o SHA-256**, nunca os valores crus. O
+/// servidor ainda tempera com a `RSE_PEPPER` antes de guardar, de modo que nem um
+/// vazamento do lado de la permite correlacionar com um hardware conhecido. Os
+/// valores crus tambem nao vao para log nenhum.
+///
+/// # Limites, ditos em voz alta
+///
+/// - **Formatar o disco ou reinstalar o Windows muda a impressao.** Para uma
+///   espera de minutos isso e irrelevante; para banimento nao seria — e mais um
+///   motivo para banir ser decisao humana, e nao automatica.
+/// - **E forjavel** por quem sabe o que esta fazendo: e um valor que o cliente
+///   calcula e envia. Serve para tornar a volta chata, nao para deter um
+///   adversario determinado.
+/// - Se **nenhuma** fonte responder, devolvemos a coringa de zeros de proposito:
+///   e melhor a espera nao valer para essa maquina do que ela colidir com todas
+///   as outras maquinas que tambem falharam.
+#[cfg(windows)]
+mod maquina {
+    use std::os::windows::ffi::OsStrExt;
+    use winapi::shared::minwindef::{DWORD, HKEY};
+    use winapi::um::fileapi::GetVolumeInformationW;
+    use winapi::um::winnt::{KEY_READ, KEY_WOW64_64KEY, REG_SZ};
+    use winapi::um::winreg::{RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY_LOCAL_MACHINE};
+
+    /// Impressao da maquina, em hex de 64 caracteres.
+    ///
+    /// Ver o cabecalho da secao para a formula e os limites.
+    pub fn impressao() -> String {
+        let mut partes: Vec<String> = Vec::new();
+
+        if let Some(serial) = serial_do_volume_do_sistema() {
+            partes.push(format!("vol:{:08X}", serial));
+        }
+        if let Some(guid) = machine_guid() {
+            partes.push(format!("guid:{}", guid));
+        }
+        if let Some(cpu) = cpu_id() {
+            partes.push(format!("cpu:{}", cpu));
+        }
+
+        if partes.is_empty() {
+            // Ver "Limites" no cabecalho: coringa deliberada, nao improviso.
+            return "0".repeat(64);
+        }
+
+        // Prefixo de dominio: o mesmo material nunca deve produzir o mesmo hash
+        // em dois usos diferentes do protocolo.
+        let material = format!("RSE1 machine-hint\n{}", partes.join("\n"));
+        rse_protocol::crypto::to_hex(&rse_protocol::crypto::sha256(material.as_bytes()))
+    }
+
+    fn para_wide(s: &str) -> Vec<u16> {
+        std::ffi::OsStr::new(s)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
+    }
+
+    /// Serial do volume onde o Windows esta instalado.
+    ///
+    /// Usa `%SystemDrive%` e nao `C:` fixo: instalacao em outra letra existe, e e
+    /// melhor cair no ramo "nao sei" do que medir o disco errado.
+    fn serial_do_volume_do_sistema() -> Option<u32> {
+        let drive = std::env::var("SystemDrive").ok()?;
+        let raiz = para_wide(&format!("{}\\", drive.trim_end_matches('\\')));
+
+        let mut serial: DWORD = 0;
+        // SAFETY: `raiz` e NUL-terminada e vive ate o fim da chamada; os demais
+        // ponteiros de saida sao nulos, que a API aceita como "nao quero isso".
+        let ok = unsafe {
+            GetVolumeInformationW(
+                raiz.as_ptr(),
+                std::ptr::null_mut(),
+                0,
+                &mut serial,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+
+        if ok == 0 || serial == 0 {
+            None
+        } else {
+            Some(serial)
+        }
+    }
+
+    /// `HKLM\SOFTWARE\Microsoft\Cryptography\MachineGuid`.
+    ///
+    /// # A pegadinha do `KEY_WOW64_64KEY`
+    ///
+    /// O launcher e **32 bits** (tem que ser: a DLL precisa da mesma arquitetura
+    /// do Ragexe). Num Windows 64 bits, um processo 32 bits que abre
+    /// `HKLM\SOFTWARE\...` e desviado para `WOW6432Node` — que tem um MachineGuid
+    /// DIFERENTE do canonico.
+    ///
+    /// Sem `KEY_WOW64_64KEY`, a impressao mudaria se um dia o launcher virasse 64
+    /// bits, e nao bateria com a de qualquer outra ferramenta que leia o valor
+    /// normal. Uma linha aqui evita uma diferenca que so apareceria muito depois,
+    /// e sem explicacao obvia.
+    fn machine_guid() -> Option<String> {
+        let caminho = para_wide("SOFTWARE\\Microsoft\\Cryptography");
+        let nome = para_wide("MachineGuid");
+        let mut chave: HKEY = std::ptr::null_mut();
+
+        // SAFETY: `caminho` e NUL-terminada; `chave` recebe a saida.
+        let r = unsafe {
+            RegOpenKeyExW(
+                HKEY_LOCAL_MACHINE,
+                caminho.as_ptr(),
+                0,
+                KEY_READ | KEY_WOW64_64KEY,
+                &mut chave,
+            )
+        };
+        // A API devolve LSTATUS; 0 e ERROR_SUCCESS. Comparado com 0 direto para
+        // nao precisar da feature `winerror` do winapi so por uma constante.
+        if r != 0 {
+            return None;
+        }
+
+        let mut tipo: DWORD = 0;
+        let mut bytes: Vec<u8> = vec![0; 256];
+        let mut tam: DWORD = bytes.len() as DWORD;
+
+        // SAFETY: chave aberta acima; `bytes` e nosso e `tam` diz o tamanho real.
+        let r = unsafe {
+            RegQueryValueExW(
+                chave,
+                nome.as_ptr(),
+                std::ptr::null_mut(),
+                &mut tipo,
+                bytes.as_mut_ptr(),
+                &mut tam,
+            )
+        };
+        // SAFETY: handle valido, e ninguem mais o usa depois daqui.
+        unsafe { RegCloseKey(chave) };
+
+        if r != 0 || tipo != REG_SZ || tam == 0 {
+            return None;
+        }
+
+        // O valor e UTF-16. `tam` esta em BYTES, e inclui o NUL final.
+        let u16s: Vec<u16> = bytes[..tam as usize]
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .take_while(|&c| c != 0)
+            .collect();
+
+        let s = String::from_utf16_lossy(&u16s);
+        if s.is_empty() {
+            None
+        } else {
+            Some(s)
+        }
+    }
+
+    /// Fabricante + familia/modelo/stepping do processador, via `CPUID`.
+    ///
+    /// # O bit que estraga tudo se ninguem reparar
+    ///
+    /// O `EBX` da folha 1 carrega o **APIC ID inicial**, que depende de QUAL
+    /// nucleo executou a instrucao. Incluir esse registrador faria a impressao
+    /// mudar entre execucoes na mesma maquina — o tipo de instabilidade que so
+    /// aparece em campo, como "a espera as vezes nao pega". Por isso a folha 1
+    /// entra sem o `EBX`.
+    ///
+    /// A folha 0 (string do fabricante) e constante e entra inteira.
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    fn cpu_id() -> Option<String> {
+        #[cfg(target_arch = "x86")]
+        use core::arch::x86::__cpuid;
+        #[cfg(target_arch = "x86_64")]
+        use core::arch::x86_64::__cpuid;
+
+        // SAFETY: CPUID existe em qualquer x86 desde o 486; folhas 0 e 1 sao as
+        // mais basicas e sempre suportadas.
+        let (f0, f1) = unsafe { (__cpuid(0), __cpuid(1)) };
+
+        Some(format!(
+            "{:08X}{:08X}{:08X}-{:08X}{:08X}{:08X}",
+            f0.ebx, f0.edx, f0.ecx, f1.eax, f1.ecx, f1.edx
+        ))
+    }
+
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+    fn cpu_id() -> Option<String> {
+        None
+    }
+}
+
+/// Fora do Windows nao ha o que medir — e o launcher so roda em Windows de
+/// verdade. Existe para o `cargo check` continuar valendo em qualquer maquina.
+#[cfg(not(windows))]
+mod maquina {
+    pub fn impressao() -> String {
+        "0".repeat(64)
     }
 }
 

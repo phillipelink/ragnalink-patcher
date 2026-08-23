@@ -20,4 +20,13 @@ panic = 'abort'
 # que devolvem erro, para o `cargo check` continuar valendo em qualquer maquina.
 # O alvo de producao dele e i686-pc-windows-msvc, porque a DLL da Fase 5 tem que
 # ter a mesma arquitetura do Ragexe.
-members = ["gruf", "mkpatch", "rpatchur", "rse/protocol", "rse/loader", "rse/watchdog", "rse/tools/smoke", "rse/tools/manifest", "rse/tools/testdbg"]
+#
+# rse/tools/testdbg, testproc e testhandle entraram na Fase 6: cada um finge ser
+# a ameaca que a deteccao correspondente procura (depurador anexado, processo
+# proibido, handle com escrita), para dar de testar sem baixar ferramenta de
+# cheat de verdade.
+#
+# O testhandle e o mais interessante dos tres: ele se chama `rse-testhandle.exe`
+# e nao esta em lista de proibidos nenhuma. Mesmo assim a 6.4b o acusa, porque
+# ela olha o handle e nao o nome. E a demonstracao de por que a 6.4b existe.
+members = ["gruf", "mkpatch", "rpatchur", "rse/protocol", "rse/loader", "rse/watchdog", "rse/tools/smoke", "rse/tools/manifest", "rse/tools/testdbg", "rse/tools/testproc", "rse/tools/testhandle", "rse/tools/whoholds", "rse/tools/testpatch"]

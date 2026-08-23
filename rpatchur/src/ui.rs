@@ -123,6 +123,7 @@ pub fn build_webview<'a>(
                 "minimize" => handle_minimize(),
                 "drag" => handle_drag(),
                 "rse_diag" => handle_rse_diag(webview),
+                "aviso_estado" => handle_aviso_estado(webview),
                 request => handle_json_request(webview, request),
             }
             Ok(())
@@ -482,6 +483,7 @@ fn handle_json_request(webview: &mut WebView<WebViewUserData>, request: &str) {
                 match function_name {
                     "login" => handle_login(webview, function_params),
                     "open_url" => handle_open_url(function_params),
+                    "aviso_visto" => handle_aviso_visto(function_params),
                     _ => {
                         log::error!("Unknown function '{}'", function_name);
                     }
@@ -658,6 +660,65 @@ fn start_game_client(webview: &mut WebView<WebViewUserData>, client_arguments: &
 /// Grava `rse_diag.txt` ao lado do jogo e mostra na interface o codigo curto que
 /// o jogador passa ao suporte. Disparado pela UI (Ctrl+Shift+D). Sem bloco `rse:`
 /// no YAML nao ha o que diagnosticar.
+// ===========================================================================
+//  Aviso de privacidade — primeira execucao
+// ===========================================================================
+//
+// A interface pergunta ("aviso_estado") e guarda ("aviso_visto"). O Rust aqui e
+// so o armazenamento: ele nao sabe qual e a versao corrente nem decide se a tela
+// aparece.
+//
+// Isso e deliberado. A versao do documento vive no `index.html`, que viaja junto
+// com o cliente e e o mesmo lugar onde o texto do aviso esta. Se a versao
+// morasse tambem aqui, seriam dois pontos para mudar ao publicar um aviso novo —
+// e o dia em que um deles ficasse para tras, a tela deixaria de aparecer para
+// quem precisava ver o texto novo, sem nenhum sintoma.
+
+/// Onde fica a marca de "ja vi o aviso".
+///
+/// Ao lado do executavel, e nao no diretorio de trabalho: o diretorio depende de
+/// como o programa foi aberto (atalho com "Iniciar em" diferente), a instalacao
+/// nao. Mesmo raciocinio do `pasta_do_executavel` em `rse.rs`.
+fn caminho_da_marca_do_aviso() -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    Some(exe.parent()?.join("rse_aviso.txt"))
+}
+
+/// Devolve a interface a versao do aviso ja aceita, ou vazio.
+fn handle_aviso_estado(webview: &mut WebView<WebViewUserData>) {
+    let versao = caminho_da_marca_do_aviso()
+        .and_then(|c| std::fs::read_to_string(c).ok())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+
+    avisar_ui(webview, "avisoEstado", &versao);
+}
+
+/// Grava que o aviso daquela versao foi visto.
+///
+/// Falha de escrita nao vira erro na cara do jogador: o pior que acontece e a
+/// tela aparecer de novo no proximo lancamento. Barrar o jogo porque nao deu
+/// para gravar um arquivo de conveniencia seria trocar um aborrecimento por um
+/// impedimento.
+fn handle_aviso_visto(parameters: Value) {
+    let versao = match parameters["versao"].as_str() {
+        Some(v) if !v.is_empty() => v,
+        _ => {
+            log::warn!("aviso_visto sem versao; nada gravado");
+            return;
+        }
+    };
+
+    match caminho_da_marca_do_aviso() {
+        Some(caminho) => {
+            if let Err(e) = std::fs::write(&caminho, versao) {
+                log::warn!("nao consegui gravar {}: {}", caminho.display(), e);
+            }
+        }
+        None => log::warn!("nao descobri onde gravar a marca do aviso"),
+    }
+}
+
 fn handle_rse_diag(webview: &mut WebView<WebViewUserData>) {
     let cfg = webview.user_data().patcher_config.clone();
     match cfg.rse.as_ref() {
